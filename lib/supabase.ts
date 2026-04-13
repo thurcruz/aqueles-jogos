@@ -251,10 +251,12 @@ export function salvarDadosLocais(dados: {
   jogador_id: string;
   codigo_sala: string;
 }) {
+  if (typeof window === "undefined") return;
   localStorage.setItem("aj_dados", JSON.stringify(dados));
 }
 
 export function carregarDadosLocais() {
+  if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem("aj_dados");
     if (!raw) return null;
@@ -270,5 +272,6 @@ export function carregarDadosLocais() {
 }
 
 export function limparDadosLocais() {
+  if (typeof window === "undefined") return;
   localStorage.removeItem("aj_dados");
 }

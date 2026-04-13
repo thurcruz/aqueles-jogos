@@ -56,7 +56,7 @@ export default function JogoPrincipal() {
   const [dica, setDica] = useState("");
   const [timerAtivo, setTimerAtivo] = useState(false);
   const [dicasDador, setDicasDador] = useState<string[]>([]);
-  const [placarFinal, setPlacarFinal] = useState(false);
+  const [, setPlacarFinal] = useState(false);
 
   // Para sincronizar palavras entre jogadores
   const palavrasGlobaisRef = useRef<Palavra[]>([]);
@@ -158,7 +158,7 @@ export default function JogoPrincipal() {
   // ─── Realtime: eventos do jogo ─────────────────────────────────────────
 
   const handleNovoEvento = useCallback(
-    (novoEvento: Record<string, unknown>) => {
+    (novoEvento: unknown) => {
       const evento = novoEvento as Evento;
 
       if (evento.tipo === "dica") {
@@ -378,7 +378,6 @@ export default function JogoPrincipal() {
     return (
       <TelaFimDeJogo
         jogadores={jogadores}
-        sala={sala}
         codigo={codigo}
         onJogarNovamente={() => router.push(`/sala/${codigo}`)}
       />
@@ -393,7 +392,6 @@ export default function JogoPrincipal() {
         jogadores={jogadores}
         onContinuar={handleIniciarRodada}
         isHost={papel === "dica-dor" || papel === "adivinhador"}
-        sala={sala}
       />
     );
   }
@@ -765,14 +763,12 @@ function TelaEntreRodadas({
   jogadores,
   onContinuar,
   isHost,
-  sala,
 }: {
   rodadaNumero: number;
   proximaDuplaVez: 1 | 2;
   jogadores: Jogador[];
   onContinuar: () => void;
   isHost: boolean;
-  sala: Sala | null;
 }) {
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-4">
@@ -828,12 +824,10 @@ function TelaEntreRodadas({
 
 function TelaFimDeJogo({
   jogadores,
-  sala,
   codigo,
   onJogarNovamente,
 }: {
   jogadores: Jogador[];
-  sala: Sala | null;
   codigo: string;
   onJogarNovamente: () => void;
 }) {

@@ -9,9 +9,9 @@ type TabelaRealtime = "salas" | "jogadores" | "rodadas" | "eventos";
 interface UseRealtimeOptions {
   salaId: string;
   tabela: TabelaRealtime;
-  onInsert?: (payload: Record<string, unknown>) => void;
-  onUpdate?: (payload: Record<string, unknown>) => void;
-  onDelete?: (payload: Record<string, unknown>) => void;
+  onInsert?: (payload: unknown) => void;
+  onUpdate?: (payload: unknown) => void;
+  onDelete?: (payload: unknown) => void;
   ativo?: boolean;
 }
 
@@ -41,7 +41,7 @@ export function useRealtime({
           filter: `sala_id=eq.${salaId}`,
         },
         (payload) => {
-          onInsert?.(payload.new as Record<string, unknown>);
+          onInsert?.(payload.new);
         }
       )
       .on(
@@ -53,7 +53,7 @@ export function useRealtime({
           filter: tabela === "salas" ? `id=eq.${salaId}` : `sala_id=eq.${salaId}`,
         },
         (payload) => {
-          onUpdate?.(payload.new as Record<string, unknown>);
+          onUpdate?.(payload.new);
         }
       )
       .on(
@@ -65,7 +65,7 @@ export function useRealtime({
           filter: `sala_id=eq.${salaId}`,
         },
         (payload) => {
-          onDelete?.(payload.old as Record<string, unknown>);
+          onDelete?.(payload.old);
         }
       )
       .subscribe();
@@ -82,7 +82,7 @@ export function useRealtime({
 // Hook específico para updates de sala (usa id ao invés de sala_id)
 interface UseRealtimeSalaOptions {
   salaId: string;
-  onUpdate?: (payload: Record<string, unknown>) => void;
+  onUpdate?: (payload: unknown) => void;
   ativo?: boolean;
 }
 
@@ -107,7 +107,7 @@ export function useRealtimeSala({
           filter: `id=eq.${salaId}`,
         },
         (payload) => {
-          onUpdate?.(payload.new as Record<string, unknown>);
+          onUpdate?.(payload.new);
         }
       )
       .subscribe();

@@ -50,19 +50,16 @@ export function useSala({ codigoSala, jogadorId }: UseSalaOptions) {
     tabela: "jogadores",
     ativo: !!sala?.id,
     onInsert: (novoJogador) => {
+      const j = novoJogador as unknown as Jogador;
       setJogadores((prev) => {
-        const existe = prev.find((j) => j.id === (novoJogador as Jogador).id);
-        if (existe) return prev;
-        return [...prev, novoJogador as Jogador];
+        if (prev.find((jg) => jg.id === j.id)) return prev;
+        return [...prev, j];
       });
     },
     onUpdate: (jogadorAtualizado) => {
+      const j = jogadorAtualizado as unknown as Jogador;
       setJogadores((prev) =>
-        prev.map((j) =>
-          j.id === (jogadorAtualizado as Jogador).id
-            ? { ...j, ...(jogadorAtualizado as Jogador) }
-            : j
-        )
+        prev.map((jg) => (jg.id === j.id ? { ...jg, ...j } : jg))
       );
     },
   });
@@ -72,7 +69,8 @@ export function useSala({ codigoSala, jogadorId }: UseSalaOptions) {
     salaId: sala?.id ?? "",
     ativo: !!sala?.id,
     onUpdate: (salaAtualizada) => {
-      setSala((prev) => (prev ? { ...prev, ...(salaAtualizada as Sala) } : prev));
+      const s = salaAtualizada as unknown as Sala;
+      setSala((prev) => (prev ? { ...prev, ...s } : prev));
     },
   });
 

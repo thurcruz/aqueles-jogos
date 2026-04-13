@@ -24,12 +24,13 @@ export default function SalaPage() {
   const [dadosLocais] = useState(() => carregarDadosLocais());
   const [iniciando, setIniciando] = useState(false);
   const [urlAtual, setUrlAtual] = useState("");
+  const [isHost, setIsHost] = useState(false);
 
   useEffect(() => {
     setUrlAtual(window.location.origin);
   }, []);
 
-  const { sala, jogadores, jogadorLocal, carregando, erro, trocarDupla } = useSala({
+  const { sala, jogadores, carregando, erro, trocarDupla } = useSala({
     codigoSala: codigo,
     jogadorId: dadosLocais?.jogador_id,
   });
@@ -41,10 +42,11 @@ export default function SalaPage() {
     }
   }, [sala?.status, codigo, router]);
 
-  const isHost = dadosLocais
-    ? localStorage.getItem("aj_sala_host_id") ===
-      (sala?.host_id ?? null)
-    : false;
+  // Verifica se é host (só no cliente)
+  useEffect(() => {
+    if (!dadosLocais || !sala) return;
+    setIsHost(localStorage.getItem("aj_sala_host_id") === sala.host_id);
+  }, [dadosLocais, sala]);
 
   const podeiniciar = salaTemJogadoresSuficientes(jogadores);
   const dupla1 = jogadoresPorDupla(jogadores, 1);
