@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Press_Start_2P, Nunito } from "next/font/google";
 import "./globals.css";
 
@@ -26,7 +26,12 @@ export const metadata: Metadata = {
     description: "Jogos multiplayer em tempo real",
     type: "website",
   },
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
   themeColor: "#5B1FA8",
 };
 
