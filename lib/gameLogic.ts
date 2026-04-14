@@ -142,7 +142,7 @@ export function outraDupla(dupla: Dupla): Dupla {
 export const JOGOS_DISPONIVEIS = [
   {
     id: "adivinhe-palavras",
-    nome: "Adivinhe as Palavras",
+    nome: "MEGASENA",
     descricao:
       "Dê dicas (só palavras!) para seu parceiro adivinhar antes do adversário!",
     icone: "💬",

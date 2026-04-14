@@ -146,7 +146,7 @@ export default function PlacarPage() {
       {/* Logo */}
       <div className="mb-6 text-center">
         <h1 className="font-pixel text-amarelo text-lg">AQUELES JOGOS</h1>
-        <p className="font-corpo text-white/50 text-sm font-bold mt-1">Adivinhe as Palavras · {modo}</p>
+        <p className="font-corpo text-white/50 text-sm font-bold mt-1">MEGASENA · {modo}</p>
       </div>
 
       {/* Código + progresso */}
