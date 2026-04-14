@@ -16,7 +16,8 @@ export type ModoJogo = "1v1" | "2v2";
 
 export interface ConfigSala {
   modo: ModoJogo;
-  num_palavras: number; // 5–10
+  num_palavras: number;  // 5–10
+  tempo_dica: number;    // segundos para dar dicas (30/45/60/90)
 }
 
 export interface Sala {

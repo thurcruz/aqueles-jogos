@@ -71,6 +71,7 @@ export default function JogoPrincipal() {
   const [erroDica, setErroDica] = useState("");
   const [flashErro, setFlashErro] = useState(false);
   const [flashAcerto, setFlashAcerto] = useState(false);
+  const [timerKey, setTimerKey] = useState(0); // força reset do timer ao mudar palavra
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
@@ -262,6 +263,7 @@ export default function JogoPrincipal() {
         dicaBotIdx: 0,
         quemAcertou: null,
       }));
+      setTimerKey((k) => k + 1); // reseta o timer
       setFase("ativa");
     }
 
@@ -495,6 +497,8 @@ export default function JogoPrincipal() {
                 onEnviarDica={handleEnviarDica}
                 onPassar={handlePassar}
                 passouParaAdversario={estado.passouParaAdversario}
+                tempoDica={sala?.config?.tempo_dica ?? 60}
+                timerKey={timerKey}
               />
             )}
 
@@ -630,6 +634,8 @@ function TelaDicaDor2v2({
   onEnviarDica,
   onPassar,
   passouParaAdversario,
+  tempoDica,
+  timerKey,
 }: {
   palavra: Palavra;
   dicasDadas: string[];
@@ -639,6 +645,8 @@ function TelaDicaDor2v2({
   onEnviarDica: (e: React.FormEvent) => void;
   onPassar: () => void;
   passouParaAdversario: boolean;
+  tempoDica: number;
+  timerKey: number;
 }) {
   if (passouParaAdversario) {
     return (
@@ -650,6 +658,13 @@ function TelaDicaDor2v2({
 
   return (
     <div className="space-y-3">
+      {/* Timer */}
+      <TimerInline
+        key={timerKey}
+        duracaoSegundos={tempoDica}
+        onZerou={onPassar}
+      />
+
       {/* Palavra a ser descrita */}
       <Card variante="amarelo" padding="md" className="text-center">
         <p className="font-corpo text-roxo/50 text-xs font-bold uppercase mb-1">
@@ -692,6 +707,60 @@ function TelaDicaDor2v2({
       <Button variante="perigo" tamanho="md" larguraTotal onClick={onPassar} icone={<span>⏭️</span>}>
         Passar para adversário
       </Button>
+    </div>
+  );
+}
+
+/** Timer compacto inline — usado dentro das telas do jogo */
+function TimerInline({
+  duracaoSegundos,
+  onZerou,
+}: {
+  duracaoSegundos: number;
+  onZerou: () => void;
+}) {
+  const [restante, setRestante] = useState(duracaoSegundos);
+
+  useEffect(() => {
+    if (restante <= 0) {
+      onZerou();
+      return;
+    }
+    const id = setTimeout(() => setRestante((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [restante, onZerou]);
+
+  const pct = (restante / duracaoSegundos) * 100;
+  const critico = restante <= 10;
+  const urgente = restante <= 20;
+
+  return (
+    <div className="w-full">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="font-corpo text-white/60 text-xs font-bold uppercase">
+          Tempo para dar dicas
+        </span>
+        <span
+          className={`font-pixel text-2xl font-bold ${
+            critico ? "text-vermelho animate-pulse" : urgente ? "text-amarelo" : "text-verde"
+          }`}
+        >
+          {restante}s
+        </span>
+      </div>
+      <div className="w-full h-3 bg-white/20 rounded-full overflow-hidden border border-white/20">
+        <div
+          className={`h-full rounded-full transition-all duration-1000 ease-linear ${
+            critico ? "bg-vermelho" : urgente ? "bg-amarelo" : "bg-verde"
+          }`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {critico && (
+        <p className="text-vermelho font-corpo font-black text-xs text-center mt-1 animate-pulse">
+          ⚠️ Vai passar para o adversário!
+        </p>
+      )}
     </div>
   );
 }

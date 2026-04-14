@@ -8,12 +8,14 @@ import { supabase, entrarNaSala, salvarDadosLocais, gerarHostId, gerarCodigoSala
 import type { ModoJogo } from "@/types/game";
 
 const OPCOES_PALAVRAS = [5, 6, 7, 8, 9, 10];
+const OPCOES_TEMPO = [30, 45, 60, 90];
 
 export default function CriarSala() {
   const router = useRouter();
   const [apelido, setApelido] = useState("");
   const [modo, setModo] = useState<ModoJogo>("2v2");
   const [numPalavras, setNumPalavras] = useState(7);
+  const [tempoDica, setTempoDica] = useState(60);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
 
@@ -36,7 +38,7 @@ export default function CriarSala() {
           host_id: hostId,
           status: "aguardando",
           jogo: "adivinhe-palavras",
-          config: { modo, num_palavras: numPalavras },
+          config: { modo, num_palavras: numPalavras, tempo_dica: tempoDica },
           palavra_atual_idx: 0,
         })
         .select()
@@ -144,6 +146,34 @@ export default function CriarSala() {
         </div>
       </div>
 
+      {/* Tempo para dar dicas */}
+      <div>
+        <label className="block font-corpo font-black text-white text-sm mb-2 uppercase tracking-wide">
+          Tempo para dar dicas
+        </label>
+        <div className="grid grid-cols-4 gap-2">
+          {OPCOES_TEMPO.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTempoDica(t)}
+              className={`py-3 rounded-xl border-2 font-corpo font-black text-base transition-all ${
+                tempoDica === t
+                  ? "bg-amarelo border-amarelo-hover text-roxo-escuro shadow-brutal-amarelo"
+                  : "bg-white/10 border-white/30 text-white hover:bg-white/20"
+              }`}
+            >
+              {t}s
+            </button>
+          ))}
+        </div>
+        <p className="text-white/50 text-xs font-corpo mt-1">
+          {modo === "1v1"
+            ? "Tempo total para adivinhar antes de passar"
+            : "Tempo do dica-dor — ao zerar, palavra passa para o adversário"}
+        </p>
+      </div>
+
       {/* Resumo */}
       <Card variante="roxo" padding="sm" className="border-white/30 bg-white/10">
         <p className="text-white/80 font-corpo text-sm text-center">
@@ -152,9 +182,7 @@ export default function CriarSala() {
           {" · "}
           <span className="font-black text-amarelo">{numPalavras} palavras</span>
           {" · "}
-          {modo === "1v1"
-            ? "bot revela as dicas"
-            : "duplas competem ao mesmo tempo"}
+          <span className="font-black text-amarelo">{tempoDica}s</span> por dica
         </p>
       </Card>
 
