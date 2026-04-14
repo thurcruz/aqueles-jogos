@@ -72,7 +72,8 @@ export default function JogoPrincipal() {
   const [erroDica, setErroDica] = useState("");
   const [flashErro, setFlashErro] = useState(false);
   const [flashAcerto, setFlashAcerto] = useState(false);
-  const [timerKey, setTimerKey] = useState(0); // força reset do timer ao mudar palavra ou revelar dica
+  const [timerKey, setTimerKey] = useState(0); // força reset do timer visual
+  const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
@@ -168,6 +169,60 @@ export default function JogoPrincipal() {
   useEffect(() => {
     carregarJogo();
   }, [carregarJogo]);
+
+  // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
+
+  useEffect(() => {
+    if (modo !== "1v1" || fase !== "ativa") return;
+    if (estado.palavras.length === 0) return;
+
+    // Só o jogador da vez publica
+    const jog = jogadores.find((j) => j.id === jogadorLocalId);
+    if (!jog || jog.dupla !== estado.vezDupla) return;
+
+    const palavraAtual = estado.palavras[estado.palavraIdx];
+    if (!palavraAtual?.dicas?.length) return;
+
+    const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
+    let dicaIdx = estado.dicaBotIdx; // começa de onde parou (reconexão)
+
+    const revelarProximaDica = () => {
+      if (dicaIdx >= palavraAtual.dicas.length) {
+        // Todas as dicas foram mostradas → passa para o outro
+        clearInterval(botTimerRef.current!);
+        avancarPalavra(outraDupla(estado.vezDupla));
+        return;
+      }
+      const dica = palavraAtual.dicas[dicaIdx];
+      dicaIdx += 1;
+
+      // Atualiza estado local imediatamente (não espera Realtime)
+      setEstado((prev) => {
+        if (prev.dicasDadas.includes(dica)) return prev;
+        return { ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1 };
+      });
+      setTimerKey((k) => k + 1); // reseta timer visual
+
+      // Publica para o outro jogador via Realtime
+      if (sala?.id) {
+        publicarEvento(sala.id, "dica_bot", {
+          dica,
+          numero: dicaIdx - 1,
+          palavra_idx: estado.palavraIdx,
+        }).catch(console.error);
+      }
+    };
+
+    // Primeira dica aparece imediatamente
+    if (dicaIdx === 0) revelarProximaDica();
+
+    // Dicas seguintes no intervalo configurado
+    botTimerRef.current = setInterval(revelarProximaDica, tempoDicaMs);
+
+    return () => {
+      if (botTimerRef.current) clearInterval(botTimerRef.current);
+    };
+  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocalId, jogadores, sala?.config?.tempo_dica, sala?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Realtime ────────────────────────────────────────────────────────
 
@@ -492,25 +547,7 @@ export default function JogoPrincipal() {
                 flashErro={flashErro}
                 tempoDica={sala?.config?.tempo_dica ?? 60}
                 timerKey={timerKey}
-                onTimerZerou={async () => {
-                  const palavraAtual = estado.palavras[estado.palavraIdx];
-                  if (!palavraAtual) return;
-                  const todasDicasReveladas = estado.dicaBotIdx >= (palavraAtual.dicas?.length ?? 0);
-                  if (todasDicasReveladas) {
-                    // Sem mais dicas → passa para o outro jogador
-                    await avancarPalavra(outraDupla(estado.vezDupla));
-                  } else {
-                    // Revela próxima dica via Realtime (resetará o timer automaticamente)
-                    const novaDica = palavraAtual.dicas[estado.dicaBotIdx];
-                    if (sala?.id) {
-                      await publicarEvento(sala.id, "dica_bot", {
-                        dica: novaDica,
-                        numero: estado.dicaBotIdx,
-                        palavra_idx: estado.palavraIdx,
-                      });
-                    }
-                  }
-                }}
+                onTimerZerou={() => {/* intervalo controla a revelação */}}
               />
             )}
 
