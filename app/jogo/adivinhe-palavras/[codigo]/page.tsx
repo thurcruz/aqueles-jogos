@@ -389,17 +389,27 @@ export default function JogoPrincipal() {
         for (const c of companheiros) await adicionarPontos(c.id, 1);
       }
 
-      await publicarEvento(sala.id, "acertou", {
+      // Mostra resultado localmente imediatamente (não espera Realtime)
+      setEstado((prev) => ({ ...prev, quemAcertou: jogadorLocal.apelido }));
+      setFlashAcerto(true);
+      setTimeout(() => setFlashAcerto(false), 1200);
+      setFase("resultado");
+      setPalpite("");
+
+      // Publica para o outro jogador
+      publicarEvento(sala.id, "acertou", {
         palavra_idx: estado.palavraIdx,
         jogador_id: jogadorLocalId,
         apelido: jogadorLocal.apelido,
         dupla: jogadorLocal.dupla,
-      });
+      }).catch(console.error);
 
-      setPalpite("");
-      // 1v1: acertou → mesmo jogador continua com a próxima palavra
-      // 2v2: alterna dupla
-      await avancarPalavra(modo === "1v1" ? estado.vezDupla : outraDupla(estado.vezDupla));
+      // Avança após mostrar o resultado
+      const proximaDupla = modo === "1v1" ? estado.vezDupla : outraDupla(estado.vezDupla);
+      setTimeout(() => {
+        setFase("preparando");
+        avancarPalavra(proximaDupla);
+      }, 2500);
     } else {
       // Errou
       setFlashErro(true);
@@ -407,7 +417,7 @@ export default function JogoPrincipal() {
       setPalpite("");
 
       if (modo === "1v1") {
-        // Em 1v1: errou → próxima palavra para o outro jogador
+        // Em 1v1: errou → próxima palavra para o outro jogador (atualiza local + publica)
         await avancarPalavra(outraDupla(estado.vezDupla));
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
@@ -434,6 +444,22 @@ export default function JogoPrincipal() {
     }
 
     const dupla = proximaDuplaVez ?? outraDupla(estado.vezDupla);
+
+    // Atualiza estado LOCAL imediatamente — não espera o Realtime entregar de volta
+    setEstado((prev) => ({
+      ...prev,
+      palavraIdx: proximoIdx,
+      vezDupla: dupla,
+      passouParaAdversario: false,
+      dicasDadas: [],
+      jaErraram: [],
+      dicaBotIdx: 0,
+      quemAcertou: null,
+    }));
+    setTimerKey((k) => k + 1);
+    setFase("ativa");
+
+    // Publica para o outro jogador via Realtime
     await supabase
       .from("salas")
       .update({ palavra_atual_idx: proximoIdx })
