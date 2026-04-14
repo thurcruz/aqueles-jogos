@@ -72,13 +72,10 @@ export default function JogoPrincipal() {
   const [erroDica, setErroDica] = useState("");
   const [flashErro, setFlashErro] = useState(false);
   const [flashAcerto, setFlashAcerto] = useState(false);
-  const [timerKey, setTimerKey] = useState(0); // força reset do timer ao mudar palavra
-  const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const jogadorLocalRef = useRef<typeof jogadorLocal>(null);
+  const [timerKey, setTimerKey] = useState(0); // força reset do timer ao mudar palavra ou revelar dica
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
-  jogadorLocalRef.current = jogadorLocal;
   const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
   // ─── Carregar dados iniciais ─────────────────────────────────────────
@@ -172,45 +169,6 @@ export default function JogoPrincipal() {
     carregarJogo();
   }, [carregarJogo]);
 
-  // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
-
-  useEffect(() => {
-    if (modo !== "1v1" || fase !== "ativa") return;
-    if (estado.palavras.length === 0) return;
-    if (botTimerRef.current) clearInterval(botTimerRef.current);
-
-    // Revela uma dica do bot a cada 8 segundos
-    botTimerRef.current = setInterval(() => {
-      setEstado((prev) => {
-        const palavraAtual = prev.palavras[prev.palavraIdx];
-        if (!palavraAtual) return prev;
-        if (prev.dicaBotIdx >= (palavraAtual.dicas?.length ?? 0)) {
-          clearInterval(botTimerRef.current!);
-          return prev;
-        }
-        const novaDica = palavraAtual.dicas[prev.dicaBotIdx];
-        // Só publica se for o jogador da vez (evita eventos duplicados)
-        const jog = jogadorLocalRef.current;
-        if (sala?.id && jog?.dupla === prev.vezDupla) {
-          publicarEvento(sala.id, "dica_bot", {
-            dica: novaDica,
-            numero: prev.dicaBotIdx,
-            palavra_idx: prev.palavraIdx,
-          });
-        }
-        return {
-          ...prev,
-          dicasDadas: [...prev.dicasDadas, novaDica],
-          dicaBotIdx: prev.dicaBotIdx + 1,
-        };
-      });
-    }, 8000);
-
-    return () => {
-      if (botTimerRef.current) clearInterval(botTimerRef.current);
-    };
-  }, [modo, fase, estado.palavraIdx, estado.palavras.length, sala?.id]);
-
   // ─── Realtime ────────────────────────────────────────────────────────
 
   const handleEvento = useCallback((novoEvento: unknown) => {
@@ -230,8 +188,11 @@ export default function JogoPrincipal() {
       setEstado((prev) => {
         if (p.palavra_idx !== prev.palavraIdx) return prev;
         if (prev.dicasDadas.includes(p.dica)) return prev;
-        return { ...prev, dicasDadas: [...prev.dicasDadas, p.dica] };
+        // Reseta o timer (via callback fora do updater, mas setTimerKey abaixo é suficiente)
+        return { ...prev, dicasDadas: [...prev.dicasDadas, p.dica], dicaBotIdx: prev.dicaBotIdx + 1 };
       });
+      // Reseta o timer para countdown da próxima dica
+      setTimerKey((k) => k + 1);
     }
 
     if (evento.tipo === "passou") {
@@ -532,7 +493,23 @@ export default function JogoPrincipal() {
                 tempoDica={sala?.config?.tempo_dica ?? 60}
                 timerKey={timerKey}
                 onTimerZerou={async () => {
-                  await avancarPalavra(outraDupla(estado.vezDupla));
+                  const palavraAtual = estado.palavras[estado.palavraIdx];
+                  if (!palavraAtual) return;
+                  const todasDicasReveladas = estado.dicaBotIdx >= (palavraAtual.dicas?.length ?? 0);
+                  if (todasDicasReveladas) {
+                    // Sem mais dicas → passa para o outro jogador
+                    await avancarPalavra(outraDupla(estado.vezDupla));
+                  } else {
+                    // Revela próxima dica via Realtime (resetará o timer automaticamente)
+                    const novaDica = palavraAtual.dicas[estado.dicaBotIdx];
+                    if (sala?.id) {
+                      await publicarEvento(sala.id, "dica_bot", {
+                        dica: novaDica,
+                        numero: estado.dicaBotIdx,
+                        palavra_idx: estado.palavraIdx,
+                      });
+                    }
+                  }
                 }}
               />
             )}
