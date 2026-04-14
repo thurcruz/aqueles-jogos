@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import {
   buscarSalaPorCodigo,
+  buscarJogadoresDaSala,
   entrarNaSala,
   salvarDadosLocais,
 } from "@/lib/supabase";
@@ -57,7 +58,13 @@ export default function EntrarSala({ codigoInicial = "" }: EntrarSalaProps) {
         return;
       }
 
-      const jogador = await entrarNaSala(sala.id, apelido.trim(), 1);
+      // Atribui dupla automaticamente: vai para o time com menos jogadores
+      const existentes = await buscarJogadoresDaSala(sala.id);
+      const dupla1Count = existentes.filter((j) => j.dupla === 1).length;
+      const dupla2Count = existentes.filter((j) => j.dupla === 2).length;
+      const duplaAtribuida: 1 | 2 = dupla1Count <= dupla2Count ? 1 : 2;
+
+      const jogador = await entrarNaSala(sala.id, apelido.trim(), duplaAtribuida);
 
       salvarDadosLocais({
         apelido: apelido.trim(),
