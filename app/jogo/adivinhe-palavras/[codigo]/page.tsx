@@ -170,6 +170,63 @@ export default function JogoPrincipal() {
     carregarJogo();
   }, [carregarJogo]);
 
+  // ─── Polling fallback: sincroniza estado caso Realtime falhe ─────────
+  useEffect(() => {
+    if (!sala?.id || fase === "carregando" || fase === "fim") return;
+
+    const syncInterval = setInterval(async () => {
+      const { data: salaAtual } = await supabase
+        .from("salas")
+        .select("palavra_atual_idx, status")
+        .eq("id", sala.id)
+        .single();
+
+      if (!salaAtual) return;
+
+      if (salaAtual.status === "encerrada" && fase !== "fim") {
+        setFase("fim");
+        return;
+      }
+
+      // Se o índice da palavra no banco divergiu, recarrega tudo (mudança de palavra)
+      if (
+        salaAtual.palavra_atual_idx !== null &&
+        salaAtual.palavra_atual_idx !== estado.palavraIdx &&
+        fase !== "preparando"
+      ) {
+        carregarJogo();
+        return;
+      }
+
+      // Dentro da mesma palavra: busca dicas que possam ter sido perdidas pelo Realtime
+      const { data: evDicas } = await supabase
+        .from("eventos")
+        .select("payload")
+        .eq("sala_id", sala.id)
+        .in("tipo", ["dica", "dica_bot"])
+        .order("criado_em", { ascending: true });
+
+      if (evDicas) {
+        const dicasDaPalavra: string[] = [];
+        for (const ev of evDicas) {
+          const p = ev.payload as { palavra_idx: number; dica: string };
+          if (p.palavra_idx === estado.palavraIdx) dicasDaPalavra.push(p.dica);
+        }
+        setEstado((prev) => {
+          const novas = dicasDaPalavra.filter((d) => !prev.dicasDadas.includes(d));
+          if (novas.length === 0) return prev;
+          return {
+            ...prev,
+            dicasDadas: [...prev.dicasDadas, ...novas],
+            dicaBotIdx: prev.dicaBotIdx + novas.length,
+          };
+        });
+      }
+    }, 3000);
+
+    return () => clearInterval(syncInterval);
+  }, [sala?.id, fase, estado.palavraIdx, carregarJogo]);
+
   // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
 
   useEffect(() => {
