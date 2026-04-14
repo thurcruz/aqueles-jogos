@@ -6,9 +6,6 @@ import Link from "next/link";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PlayerChip from "@/components/ui/PlayerChip";
-import TimerRodada from "@/components/jogo/TimerRodada";
-import TabelaPalavras from "@/components/jogo/TabelaPalavras";
-import Placar from "@/components/jogo/Placar";
 import {
   supabase,
   carregarDadosLocais,
@@ -17,31 +14,38 @@ import {
   adicionarPontos,
 } from "@/lib/supabase";
 import {
-  determinarPapel,
-  calcularTotalRodadas,
-  proximaDupla,
+  determinarPapel2v2,
+  calcularPlacar,
+  quemGanhou,
+  jogadoresPorDupla,
+  outraDupla,
+  validarDica,
 } from "@/lib/gameLogic";
 import { useRealtime, useRealtimeSala } from "@/hooks/useRealtime";
-import type { Sala, Jogador, Palavra, Evento } from "@/types/game";
+import type { Sala, Jogador, Palavra, Evento, Dupla, ModoJogo } from "@/types/game";
+
+// ─── Tipos internos ───────────────────────────────────────────────────────
 
 type FaseJogo =
   | "carregando"
-  | "preparando"
-  | "rodada-ativa"
-  | "entre-rodadas"
-  | "fim";
+  | "preparando"     // entre palavras — "Próxima palavra..."
+  | "ativa"          // palavra em andamento
+  | "passou"         // dupla 1 errou → dupla 2 tenta
+  | "resultado"      // mostra quem acertou / ninguém acertou
+  | "fim";           // partida encerrada
 
-interface EstadoRodada {
-  id: string;
-  numero: number;
-  duplaVez: 1 | 2;
-  palavraAtual: Palavra | null;
-  todasPalavras: Palavra[];
+interface EstadoLocal {
+  palavras: Palavra[];
   palavraIdx: number;
-  acertos: boolean[];
-  dicas: string[];
-  status: string;
+  vezDupla: Dupla;           // qual dupla iniciou esta palavra
+  passouParaAdversario: boolean;
+  dicasDadas: string[];
+  jaErraram: string[];       // IDs de jogadores que já erraram (1v1)
+  dicaBotIdx: number;        // quantas dicas do bot já foram reveladas
+  quemAcertou: string | null; // apelido de quem acertou
 }
+
+// ─── Página principal ────────────────────────────────────────────────────
 
 export default function JogoPrincipal() {
   const params = useParams();
@@ -52,184 +56,225 @@ export default function JogoPrincipal() {
   const [sala, setSala] = useState<Sala | null>(null);
   const [jogadores, setJogadores] = useState<Jogador[]>([]);
   const [fase, setFase] = useState<FaseJogo>("carregando");
-  const [rodada, setRodada] = useState<EstadoRodada | null>(null);
+  const [estado, setEstado] = useState<EstadoLocal>({
+    palavras: [],
+    palavraIdx: 0,
+    vezDupla: 1,
+    passouParaAdversario: false,
+    dicasDadas: [],
+    jaErraram: [],
+    dicaBotIdx: 0,
+    quemAcertou: null,
+  });
   const [dica, setDica] = useState("");
-  const [timerAtivo, setTimerAtivo] = useState(false);
-  const [dicasDador, setDicasDador] = useState<string[]>([]);
-  const [, setPlacarFinal] = useState(false);
-
-  // Para sincronizar palavras entre jogadores
-  const palavrasGlobaisRef = useRef<Palavra[]>([]);
+  const [palpite, setPalpite] = useState("");
+  const [erroDica, setErroDica] = useState("");
+  const [flashErro, setFlashErro] = useState(false);
+  const [flashAcerto, setFlashAcerto] = useState(false);
+  const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
+  const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
-  // ─── Carregar dados iniciais ───────────────────────────────────────────
+  // ─── Carregar dados iniciais ─────────────────────────────────────────
 
-  useEffect(() => {
-    if (!codigo) return;
-    carregarJogo();
+  const carregarJogo = useCallback(async () => {
+    const { data: salaData } = await supabase
+      .from("salas")
+      .select("*")
+      .eq("codigo", codigo)
+      .single();
+    if (!salaData) return;
+    setSala(salaData as Sala);
+
+    const jogs = await buscarJogadoresDaSala(salaData.id);
+    setJogadores(jogs);
+
+    // Busca evento de início para ter as palavras
+    const { data: evIniciar } = await supabase
+      .from("eventos")
+      .select("*")
+      .eq("sala_id", salaData.id)
+      .eq("tipo", "iniciar")
+      .order("criado_em", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!evIniciar) return;
+
+    const palavrasIds = (evIniciar.payload as { palavras_ids: string[] }).palavras_ids;
+    const { data: palavrasData } = await supabase
+      .from("palavras")
+      .select("*")
+      .in("id", palavrasIds);
+
+    if (!palavrasData) return;
+
+    const palavrasOrdenadas = palavrasIds
+      .map((id) => palavrasData.find((p) => p.id === id))
+      .filter(Boolean) as Palavra[];
+
+    // Busca o estado atual da partida (último evento proxima_palavra ou iniciar)
+    const { data: evEstado } = await supabase
+      .from("eventos")
+      .select("*")
+      .eq("sala_id", salaData.id)
+      .in("tipo", ["proxima_palavra", "iniciar"])
+      .order("criado_em", { ascending: false })
+      .limit(1)
+      .single();
+
+    let palavraIdx = 0;
+    let vezDupla: Dupla = 1;
+    if (evEstado?.tipo === "proxima_palavra") {
+      const p = evEstado.payload as { palavra_idx: number; vez_dupla: Dupla };
+      palavraIdx = p.palavra_idx;
+      vezDupla = p.vez_dupla;
+    }
+
+    // Busca as dicas já dadas para a palavra atual
+    const { data: evDicas } = await supabase
+      .from("eventos")
+      .select("*")
+      .eq("sala_id", salaData.id)
+      .eq("tipo", "dica")
+      .order("criado_em", { ascending: true });
+
+    // Filtra dicas da palavra atual
+    const dicasAtuais: string[] = [];
+    if (evDicas) {
+      for (const ev of evDicas) {
+        const p = ev.payload as { palavra_idx: number; dica: string };
+        if (p.palavra_idx === palavraIdx) dicasAtuais.push(p.dica);
+      }
+    }
+
+    setEstado({
+      palavras: palavrasOrdenadas,
+      palavraIdx,
+      vezDupla,
+      passouParaAdversario: false,
+      dicasDadas: dicasAtuais,
+      jaErraram: [],
+      dicaBotIdx: dicasAtuais.length,
+      quemAcertou: null,
+    });
+
+    setFase(salaData.status === "encerrada" ? "fim" : "ativa");
   }, [codigo]);
 
-  async function carregarJogo() {
-    try {
-      const { data: salaData } = await supabase
-        .from("salas")
-        .select("*")
-        .eq("codigo", codigo)
-        .single();
+  useEffect(() => {
+    carregarJogo();
+  }, [carregarJogo]);
 
-      if (!salaData) return;
-      setSala(salaData as Sala);
+  // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
 
-      const jogadoresData = await buscarJogadoresDaSala(salaData.id);
-      setJogadores(jogadoresData);
+  useEffect(() => {
+    if (modo !== "1v1" || fase !== "ativa") return;
+    if (botTimerRef.current) clearInterval(botTimerRef.current);
 
-      // Busca evento de início para ter as palavras
-      const { data: eventoIniciar } = await supabase
-        .from("eventos")
-        .select("*")
-        .eq("sala_id", salaData.id)
-        .eq("tipo", "iniciar")
-        .order("criado_em", { ascending: false })
-        .limit(1)
-        .single();
+    const palavraAtual = estado.palavras[estado.palavraIdx];
+    if (!palavraAtual) return;
 
-      if (eventoIniciar) {
-        const palavrasIds = (eventoIniciar.payload as { palavras_ids: string[] }).palavras_ids;
-        const { data: palavrasData } = await supabase
-          .from("palavras")
-          .select("*")
-          .in("id", palavrasIds);
-
-        if (palavrasData) {
-          // Ordena conforme IDs originais
-          const palavrasOrdenadas = palavrasIds
-            .map((id) => palavrasData.find((p) => p.id === id))
-            .filter(Boolean) as Palavra[];
-          palavrasGlobaisRef.current = palavrasOrdenadas;
+    // Revela uma dica do bot a cada 8 segundos
+    botTimerRef.current = setInterval(() => {
+      setEstado((prev) => {
+        if (prev.dicaBotIdx >= (palavraAtual.dicas?.length ?? 0)) {
+          clearInterval(botTimerRef.current!);
+          return prev;
         }
-      }
-
-      // Busca rodada ativa
-      const { data: rodadaData } = await supabase
-        .from("rodadas")
-        .select("*, palavras(*)")
-        .eq("sala_id", salaData.id)
-        .eq("status", "ativa")
-        .order("numero", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (rodadaData) {
-        const totalRodadas = calcularTotalRodadas(salaData.config.rodadas);
-        const palavrasPorRodada = 5;
-        const offset = (rodadaData.numero - 1) * palavrasPorRodada;
-        const palavrasDaRodada = palavrasGlobaisRef.current.slice(
-          offset,
-          offset + palavrasPorRodada
-        );
-
-        setRodada({
-          id: rodadaData.id,
-          numero: rodadaData.numero,
-          duplaVez: rodadaData.dupla_vez as 1 | 2,
-          palavraAtual: palavrasDaRodada[0] ?? null,
-          todasPalavras: palavrasDaRodada,
-          palavraIdx: 0,
-          acertos: [],
-          dicas: [],
-          status: "ativa",
-        });
-
-        if (salaData.rodada_atual === totalRodadas && rodadaData.status !== "ativa") {
-          setFase("fim");
-        } else {
-          setFase("preparando");
+        const novaDica = palavraAtual.dicas[prev.dicaBotIdx];
+        // Publica evento de dica_bot para outros jogadores
+        if (sala?.id) {
+          publicarEvento(sala.id, "dica_bot", {
+            dica: novaDica,
+            numero: prev.dicaBotIdx,
+            palavra_idx: prev.palavraIdx,
+          });
         }
-      } else {
-        setFase("fim");
-      }
-    } catch (err) {
-      console.error("Erro ao carregar jogo:", err);
-    }
-  }
-
-  // ─── Realtime: eventos do jogo ─────────────────────────────────────────
-
-  const handleNovoEvento = useCallback(
-    (novoEvento: unknown) => {
-      const evento = novoEvento as Evento;
-
-      if (evento.tipo === "dica") {
-        const payload = evento.payload as { dica: string; numero: number };
-        setDicasDador((prev) => {
-          if (prev.includes(payload.dica)) return prev;
-          return [...prev, payload.dica];
-        });
-      }
-
-      if (evento.tipo === "acertou") {
-        const payload = evento.payload as { palavra_idx: number; dupla: number };
-        setRodada((prev) => {
-          if (!prev) return prev;
-          const novosAcertos = [...prev.acertos];
-          novosAcertos[payload.palavra_idx] = true;
-
-          const proximoIdx = payload.palavra_idx + 1;
-          const proximaPalavra = prev.todasPalavras[proximoIdx] ?? null;
-
-          return {
-            ...prev,
-            acertos: novosAcertos,
-            palavraIdx: proximoIdx,
-            palavraAtual: proximaPalavra,
-          };
-        });
-        setDicasDador([]);
-      }
-
-      if (evento.tipo === "proximo") {
-        const payload = evento.payload as {
-          proxima_dupla: 1 | 2;
-          rodada_numero: number;
-          palavras_offset: number;
+        return {
+          ...prev,
+          dicasDadas: [...prev.dicasDadas, novaDica],
+          dicaBotIdx: prev.dicaBotIdx + 1,
         };
+      });
+    }, 8000);
 
-        const palavrasDaRodada = palavrasGlobaisRef.current.slice(
-          payload.palavras_offset,
-          payload.palavras_offset + 5
-        );
+    return () => {
+      if (botTimerRef.current) clearInterval(botTimerRef.current);
+    };
+  }, [modo, fase, estado.palavraIdx, sala?.id]);
 
-        setRodada({
-          id: "",
-          numero: payload.rodada_numero,
-          duplaVez: payload.proxima_dupla,
-          palavraAtual: palavrasDaRodada[0] ?? null,
-          todasPalavras: palavrasDaRodada,
-          palavraIdx: 0,
-          acertos: [],
-          dicas: [],
-          status: "ativa",
-        });
-        setDicasDador([]);
-        setTimerAtivo(false);
-        setFase("preparando");
-      }
+  // ─── Realtime ────────────────────────────────────────────────────────
 
-      if (evento.tipo === "fim") {
-        setFase("fim");
-        setPlacarFinal(true);
-      }
-    },
-    []
-  );
+  const handleEvento = useCallback((novoEvento: unknown) => {
+    const evento = novoEvento as Evento;
+
+    if (evento.tipo === "dica") {
+      const p = evento.payload as { dica: string; palavra_idx: number };
+      setEstado((prev) => {
+        if (p.palavra_idx !== prev.palavraIdx) return prev;
+        if (prev.dicasDadas.includes(p.dica)) return prev;
+        return { ...prev, dicasDadas: [...prev.dicasDadas, p.dica] };
+      });
+    }
+
+    if (evento.tipo === "dica_bot") {
+      const p = evento.payload as { dica: string; palavra_idx: number };
+      setEstado((prev) => {
+        if (p.palavra_idx !== prev.palavraIdx) return prev;
+        if (prev.dicasDadas.includes(p.dica)) return prev;
+        return { ...prev, dicasDadas: [...prev.dicasDadas, p.dica] };
+      });
+    }
+
+    if (evento.tipo === "passou") {
+      const p = evento.payload as { palavra_idx: number };
+      setEstado((prev) => {
+        if (p.palavra_idx !== prev.palavraIdx) return prev;
+        return { ...prev, passouParaAdversario: true };
+      });
+      setFase("passou");
+    }
+
+    if (evento.tipo === "acertou") {
+      const p = evento.payload as { palavra_idx: number; apelido: string };
+      setEstado((prev) => ({ ...prev, quemAcertou: p.apelido }));
+      setFlashAcerto(true);
+      setTimeout(() => setFlashAcerto(false), 1200);
+      setFase("resultado");
+      setTimeout(() => setFase("preparando"), 2500);
+    }
+
+    if (evento.tipo === "proxima_palavra") {
+      const p = evento.payload as {
+        palavra_idx: number;
+        vez_dupla: Dupla;
+      };
+      setEstado((prev) => ({
+        ...prev,
+        palavraIdx: p.palavra_idx,
+        vezDupla: p.vez_dupla,
+        passouParaAdversario: false,
+        dicasDadas: [],
+        jaErraram: [],
+        dicaBotIdx: 0,
+        quemAcertou: null,
+      }));
+      setFase("ativa");
+    }
+
+    if (evento.tipo === "fim") {
+      setFase("fim");
+    }
+  }, []);
 
   useRealtime({
     salaId: sala?.id ?? "",
     tabela: "eventos",
     ativo: !!sala?.id,
-    onInsert: handleNovoEvento,
+    onInsert: handleEvento,
   });
 
   useRealtime({
@@ -237,264 +282,303 @@ export default function JogoPrincipal() {
     tabela: "jogadores",
     ativo: !!sala?.id,
     onUpdate: (j) => {
-      setJogadores((prev) =>
-        prev.map((jg) => (jg.id === (j as Jogador).id ? { ...jg, ...(j as Jogador) } : jg))
-      );
+      const jog = j as unknown as Jogador;
+      setJogadores((prev) => prev.map((jg) => (jg.id === jog.id ? { ...jg, ...jog } : jg)));
     },
   });
 
   useRealtimeSala({
     salaId: sala?.id ?? "",
     ativo: !!sala?.id,
-    onUpdate: (s) => setSala((prev) => (prev ? { ...prev, ...(s as Sala) } : prev)),
+    onUpdate: (s) => {
+      const sa = s as unknown as Sala;
+      setSala((prev) => (prev ? { ...prev, ...sa } : prev));
+    },
   });
 
-  // ─── Papel do jogador ──────────────────────────────────────────────────
+  // ─── Papel do jogador ─────────────────────────────────────────────────
+
+  const rodadaEstado = estado.palavras.length > 0;
 
   const papel =
-    rodada && jogadorLocal
-      ? determinarPapel(
+    modo === "2v2" && rodadaEstado
+      ? determinarPapel2v2(
           jogadorLocalId,
-          rodada.duplaVez,
+          estado.vezDupla,
+          estado.passouParaAdversario,
           jogadores
         )
       : "espectador";
 
-  // ─── Ações do jogo ─────────────────────────────────────────────────────
-
-  function handleIniciarRodada() {
-    setTimerAtivo(true);
-    setFase("rodada-ativa");
-  }
+  // ─── Ações ───────────────────────────────────────────────────────────
 
   async function handleEnviarDica(e: React.FormEvent) {
     e.preventDefault();
-    if (!dica.trim() || !sala || !rodada) return;
-
-    const dicaTexto = dica.trim();
-    setDica("");
+    if (!sala) return;
+    const { valida, erro } = validarDica(dica);
+    if (!valida) { setErroDica(erro ?? ""); return; }
+    setErroDica("");
 
     await publicarEvento(sala.id, "dica", {
-      dica: dicaTexto,
-      numero: dicasDador.length + 1,
+      dica: dica.trim().toLowerCase(),
+      palavra_idx: estado.palavraIdx,
       jogador_id: jogadorLocalId,
-      apelido: jogadorLocal?.apelido ?? "",
     });
+    setDica("");
   }
 
-  async function handleAcertou() {
-    if (!sala || !rodada || !jogadorLocal) return;
-
-    // Adiciona ponto para os jogadores da dupla da vez
-    const jogadoresDaDupla = jogadores.filter(
-      (j) => j.dupla === rodada.duplaVez && j.ativo
-    );
-    for (const j of jogadoresDaDupla) {
-      await adicionarPontos(j.id, 1);
-    }
-
-    await publicarEvento(sala.id, "acertou", {
-      palavra_idx: rodada.palavraIdx,
-      dupla: rodada.duplaVez,
-      palavra: rodada.palavraAtual?.palavra ?? "",
+  async function handlePassar() {
+    if (!sala) return;
+    await publicarEvento(sala.id, "passou", {
+      palavra_idx: estado.palavraIdx,
+      dupla: estado.vezDupla,
     });
-
-    // Verifica se acabaram as palavras
-    if (rodada.palavraIdx >= rodada.todasPalavras.length - 1) {
-      await handleFimRodada("acertou");
-    }
+    // Localmente já atualiza
+    setEstado((prev) => ({ ...prev, passouParaAdversario: true }));
+    setFase("passou");
   }
 
-  async function handleFimRodada(motivo: "tempo" | "acertou" | "passou") {
-    if (!sala || !rodada) return;
-    setTimerAtivo(false);
+  async function handlePalpite(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sala || !jogadorLocal) return;
+    const limpo = palpite.trim().toLowerCase();
+    if (!limpo) return;
 
-    // Atualiza status da rodada no banco
-    await supabase
-      .from("rodadas")
-      .update({ status: motivo === "acertou" ? "acertou" : "tempo", encerrou_em: new Date().toISOString() })
-      .eq("sala_id", sala.id)
-      .eq("numero", rodada.numero);
+    const palavraAtual = estado.palavras[estado.palavraIdx];
+    if (!palavraAtual) return;
 
-    const totalRodadas = calcularTotalRodadas(sala.config.rodadas);
+    const correto =
+      limpo === palavraAtual.palavra.toLowerCase();
 
-    if (rodada.numero >= totalRodadas) {
-      // Fim de jogo
-      await supabase
-        .from("salas")
-        .update({ status: "encerrada" })
-        .eq("id", sala.id);
-
-      await publicarEvento(sala.id, "fim", {});
-      setFase("fim");
-    } else {
-      // Próxima rodada
-      const proximaRodadaNum = rodada.numero + 1;
-      const proximaDuplaVez = proximaDupla(rodada.duplaVez);
-      const offset = (proximaRodadaNum - 1) * 5;
-
-      const proximaPalavra = palavrasGlobaisRef.current[offset];
-      if (proximaPalavra) {
-        await supabase.from("rodadas").insert({
-          sala_id: sala.id,
-          numero: proximaRodadaNum,
-          palavra_id: proximaPalavra.id,
-          dupla_vez: proximaDuplaVez,
-          status: "ativa",
-          iniciou_em: new Date().toISOString(),
-        });
-
-        await supabase
-          .from("salas")
-          .update({ rodada_atual: proximaRodadaNum })
-          .eq("id", sala.id);
+    if (correto) {
+      // Adiciona ponto para o jogador (e dupla em 2v2)
+      await adicionarPontos(jogadorLocalId, 1);
+      if (modo === "2v2") {
+        // Ponto para toda a dupla que acertou
+        const duplaVencedora = estado.passouParaAdversario
+          ? outraDupla(estado.vezDupla)
+          : estado.vezDupla;
+        const companheiros = jogadores.filter(
+          (j) => j.dupla === duplaVencedora && j.ativo && j.id !== jogadorLocalId
+        );
+        for (const c of companheiros) await adicionarPontos(c.id, 1);
       }
 
-      await publicarEvento(sala.id, "proximo", {
-        proxima_dupla: proximaDuplaVez,
-        rodada_numero: proximaRodadaNum,
-        palavras_offset: offset,
+      await publicarEvento(sala.id, "acertou", {
+        palavra_idx: estado.palavraIdx,
+        jogador_id: jogadorLocalId,
+        apelido: jogadorLocal.apelido,
+        dupla: jogadorLocal.dupla,
       });
 
-      setFase("entre-rodadas");
+      setPalpite("");
+      await avancarPalavra();
+    } else {
+      // Errou
+      setFlashErro(true);
+      setTimeout(() => setFlashErro(false), 600);
+      setPalpite("");
+
+      if (modo === "1v1") {
+        // Em 1v1: marca que errou, passa para o outro jogador
+        const novosErros = [...estado.jaErraram, jogadorLocalId];
+        const totalJogadores = jogadores.filter((j) => j.ativo).length;
+        if (novosErros.length >= totalJogadores) {
+          // Todos erraram → avança
+          await avancarPalavra();
+        } else {
+          setEstado((prev) => ({ ...prev, jaErraram: novosErros }));
+        }
+      } else {
+        // Em 2v2: se a dupla da vez errou → passa para adversário
+        if (!estado.passouParaAdversario) {
+          await handlePassar();
+        } else {
+          // Adversário também errou → avança
+          await avancarPalavra();
+        }
+      }
     }
   }
 
-  // ─── Renders por fase ──────────────────────────────────────────────────
+  async function avancarPalavra() {
+    if (!sala) return;
+    const proximoIdx = estado.palavraIdx + 1;
+
+    if (proximoIdx >= estado.palavras.length) {
+      // Fim da partida
+      await supabase.from("salas").update({ status: "encerrada" }).eq("id", sala.id);
+      await publicarEvento(sala.id, "fim", {});
+      setFase("fim");
+      return;
+    }
+
+    const proximaDuplaVez = outraDupla(estado.vezDupla);
+    await supabase
+      .from("salas")
+      .update({ palavra_atual_idx: proximoIdx })
+      .eq("id", sala.id);
+
+    await publicarEvento(sala.id, "proxima_palavra", {
+      palavra_idx: proximoIdx,
+      vez_dupla: proximaDuplaVez,
+    });
+  }
+
+  // ─── Helpers de renderização ──────────────────────────────────────────
+
+  const palavraAtual = estado.palavras[estado.palavraIdx] ?? null;
 
   if (fase === "carregando") {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="font-pixel text-amarelo text-sm animate-pulse mb-2">
-            Carregando jogo...
-          </div>
-        </div>
+        <p className="font-pixel text-amarelo text-sm animate-pulse">Carregando...</p>
       </div>
     );
   }
 
   if (fase === "fim") {
-    return (
-      <TelaFimDeJogo
-        jogadores={jogadores}
-        codigo={codigo}
-        onJogarNovamente={() => router.push(`/sala/${codigo}`)}
-      />
-    );
-  }
-
-  if (fase === "entre-rodadas") {
-    return (
-      <TelaEntreRodadas
-        rodadaNumero={rodada?.numero ?? 1}
-        proximaDuplaVez={rodada ? proximaDupla(rodada.duplaVez) : 1}
-        jogadores={jogadores}
-        onContinuar={handleIniciarRodada}
-        isHost={papel === "dica-dor" || papel === "adivinhador"}
-      />
-    );
+    return <TelaFim jogadores={jogadores} modo={modo} codigo={codigo} onReiniciar={() => router.push(`/sala/${codigo}`)} />;
   }
 
   return (
-    <main className="min-h-screen flex flex-col px-4 py-4">
-      <div className="max-w-lg mx-auto w-full space-y-4">
+    <main className={`min-h-screen flex flex-col px-4 py-4 transition-colors duration-300 ${flashAcerto ? "bg-verde/30" : flashErro ? "bg-vermelho/20" : ""}`}>
+      <div className="max-w-lg mx-auto w-full space-y-3">
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-corpo text-white/60 text-xs font-bold">
-              RODADA {rodada?.numero ?? 1} •{" "}
-              {sala ? calcularTotalRodadas(sala.config.rodadas) : "?"} TOTAL
+            <p className="font-corpo text-white/50 text-xs font-bold uppercase">
+              Palavra {estado.palavraIdx + 1} / {estado.palavras.length}
             </p>
             <p className="font-corpo font-black text-white text-sm">
-              Dupla {rodada?.duplaVez ?? 1} jogando
+              {modo === "1v1" ? "1v1 · Bot dá as dicas" : `Dupla ${estado.passouParaAdversario ? outraDupla(estado.vezDupla) : estado.vezDupla} tentando`}
             </p>
           </div>
           <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank">
-            <Button variante="fantasma" tamanho="sm">
-              📊 Placar
-            </Button>
+            <Button variante="fantasma" tamanho="sm">📊</Button>
           </Link>
         </div>
 
-        {/* Placar resumido */}
-        <Placar
-          jogadores={jogadores}
-          rodadaAtual={rodada?.numero}
-          totalRodadas={sala ? calcularTotalRodadas(sala.config.rodadas) : undefined}
+        {/* Mini placar */}
+        <MiniPlacar jogadores={jogadores} modo={modo} />
+
+        {/* Progresso de palavras */}
+        <ProgressoPalavras
+          total={estado.palavras.length}
+          atual={estado.palavraIdx}
         />
 
-        {/* Timer (apenas durante rodada ativa) */}
-        {fase === "rodada-ativa" && sala && (
-          <Card variante="roxo" padding="md" className="bg-white/10 border-white/20">
-            <TimerRodada
-              duracaoSegundos={sala.config.tempo_por_rodada}
-              ativo={timerAtivo}
-              onTempoEsgotado={() => handleFimRodada("tempo")}
-            />
+        {/* Fase: preparando */}
+        {fase === "preparando" && (
+          <Card variante="amarelo" padding="md" className="text-center animate-slide-up">
+            <p className="font-pixel text-roxo-escuro text-lg">
+              Próxima palavra!
+            </p>
+            <p className="font-corpo text-roxo/70 font-bold text-sm mt-2">
+              Dupla {outraDupla(estado.vezDupla)} começa
+            </p>
           </Card>
         )}
 
-        {/* Tela de preparação */}
-        {fase === "preparando" && rodada && (
-          <TelaPreparo
-            duplaVez={rodada.duplaVez}
-            papel={papel}
-            onIniciar={handleIniciarRodada}
-            jogadores={jogadores}
-          />
+        {/* Fase: ativa ou passou */}
+        {(fase === "ativa" || fase === "passou") && palavraAtual && (
+          <>
+            {/* Tela do dica-dor (2v2) */}
+            {modo === "2v2" && papel === "dica-dor" && (
+              <TelaDicaDor2v2
+                palavra={palavraAtual}
+                dicasDadas={estado.dicasDadas}
+                dica={dica}
+                erroDica={erroDica}
+                onChangeDica={(v) => { setDica(v); setErroDica(""); }}
+                onEnviarDica={handleEnviarDica}
+                onPassar={handlePassar}
+                passouParaAdversario={estado.passouParaAdversario}
+              />
+            )}
+
+            {/* Tela do adivinhador (2v2 e 1v1) */}
+            {(modo === "1v1" || (modo === "2v2" && papel === "adivinhador")) && (
+              <TelaAdivinhador
+                dicas={estado.dicasDadas}
+                palpite={palpite}
+                onChangePalpite={setPalpite}
+                onEnviarPalpite={handlePalpite}
+                flashErro={flashErro}
+                jaErrei={estado.jaErraram.includes(jogadorLocalId)}
+                modo={modo}
+              />
+            )}
+
+            {/* Adversário esperando (2v2) — quando é a vez do adversário dar dicas */}
+            {modo === "2v2" && papel === "adversario" && !estado.passouParaAdversario && (
+              <TelaAdversarioEsperando dicas={estado.dicasDadas} />
+            )}
+
+            {/* Adversário tentando (2v2) — palavra passou */}
+            {modo === "2v2" && papel === "adversario" && estado.passouParaAdversario && (
+              <TelaAdivinhador
+                dicas={estado.dicasDadas}
+                palpite={palpite}
+                onChangePalpite={setPalpite}
+                onEnviarPalpite={handlePalpite}
+                flashErro={flashErro}
+                jaErrei={false}
+                modo={modo}
+                isRuoubo
+              />
+            )}
+
+            {/* Dica-dor adversário (2v2) quando passa a palavra */}
+            {modo === "2v2" && papel === "dica-dor" && estado.passouParaAdversario && (
+              <Card variante="roxo" padding="md" className="bg-white/10 border-white/20 text-center">
+                <p className="font-pixel text-amarelo text-xs mb-1">PALAVRA PASSOU!</p>
+                <p className="font-corpo font-black text-white">
+                  Dupla adversária está tentando...
+                </p>
+              </Card>
+            )}
+          </>
         )}
 
-        {/* Tela do dica-dor */}
-        {fase === "rodada-ativa" && papel === "dica-dor" && rodada && (
-          <TelaDicaDor
-            rodada={rodada}
-            dica={dica}
-            onChangeDica={setDica}
-            onEnviarDica={handleEnviarDica}
-            onAcertou={handleAcertou}
-            onPassar={() => handleFimRodada("passou")}
-            dicasEnviadas={dicasDador}
-          />
+        {/* Resultado */}
+        {fase === "resultado" && (
+          <Card
+            variante={estado.quemAcertou ? "amarelo" : "roxo"}
+            padding="md"
+            className="text-center animate-slide-up"
+          >
+            {estado.quemAcertou ? (
+              <>
+                <p className="font-pixel text-roxo-escuro text-xl mb-1">✅ ACERTOU!</p>
+                <p className="font-corpo font-black text-roxo-escuro text-lg">
+                  {estado.quemAcertou}
+                </p>
+                <p className="font-corpo text-roxo/70 text-sm font-bold mt-1">
+                  era: <span className="text-roxo-escuro">{palavraAtual?.palavra}</span>
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-pixel text-white text-lg mb-1">❌ Ninguém acertou</p>
+                <p className="font-corpo text-white/70 font-bold text-sm">
+                  era: <span className="text-white">{palavraAtual?.palavra}</span>
+                </p>
+              </>
+            )}
+          </Card>
         )}
 
-        {/* Tela do adivinhador */}
-        {fase === "rodada-ativa" && papel === "adivinhador" && rodada && (
-          <TelaAdivinhador
-            rodada={rodada}
-            dicas={dicasDador}
-            onAcertou={handleAcertou}
-          />
-        )}
-
-        {/* Tela do adversário / espectador */}
-        {fase === "rodada-ativa" &&
-          (papel === "adversario" || papel === "espectador") &&
-          rodada && (
-            <TelaEspectador
-              rodada={rodada}
-              dicas={dicasDador}
-              papel={papel}
-              onRoubar={papel === "adversario" ? handleAcertou : undefined}
-            />
-          )}
-
-        {/* Jogadores online */}
+        {/* Jogadores */}
         <Card variante="padrao" padding="sm">
-          <p className="font-corpo font-black text-gray-500 text-xs uppercase tracking-wide mb-2">
-            Jogadores
-          </p>
           <div className="flex flex-wrap gap-2">
             {jogadores.map((j) => (
-              <PlayerChip
-                key={j.id}
-                jogador={j}
-                isLocal={j.id === jogadorLocalId}
-                compact
-              />
+              <PlayerChip key={j.id} jogador={j} isLocal={j.id === jogadorLocalId} compact />
             ))}
           </div>
         </Card>
+
       </div>
     </main>
   );
@@ -502,357 +586,279 @@ export default function JogoPrincipal() {
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────
 
-function TelaPreparo({
-  duplaVez,
-  papel,
-  onIniciar,
-  jogadores,
-}: {
-  duplaVez: 1 | 2;
-  papel: string;
-  onIniciar: () => void;
-  jogadores: Jogador[];
-}) {
-  const jaDupla = jogadores.filter((j) => j.dupla === duplaVez && j.ativo);
-
+function ProgressoPalavras({ total, atual }: { total: number; atual: number }) {
   return (
-    <Card variante="amarelo" padding="md" className="text-center">
-      <p className="font-pixel text-roxo-escuro text-xs mb-2">PRÓXIMA RODADA</p>
-      <p className="font-corpo font-black text-roxo-escuro text-2xl mb-1">
-        Dupla {duplaVez} joga!
-      </p>
-      <div className="flex justify-center gap-2 flex-wrap mb-4">
-        {jaDupla.map((j) => (
-          <span key={j.id} className="bg-roxo text-white px-3 py-1 rounded-full font-corpo font-bold text-sm">
-            {j.apelido}
-          </span>
-        ))}
-      </div>
-      {(papel === "dica-dor" || papel === "adivinhador") ? (
-        <Button variante="primario" tamanho="lg" larguraTotal onClick={onIniciar} icone={<span>▶️</span>}>
-          Começar Rodada!
-        </Button>
-      ) : (
-        <p className="font-corpo font-bold text-roxo/70 text-sm">
-          Aguardando a dupla iniciar...
-        </p>
-      )}
-    </Card>
+    <div className="flex gap-1.5">
+      {Array.from({ length: total }).map((_, i) => (
+        <div
+          key={i}
+          className={`h-2 flex-1 rounded-full transition-all duration-300 ${
+            i < atual
+              ? "bg-verde"
+              : i === atual
+              ? "bg-amarelo"
+              : "bg-white/20"
+          }`}
+        />
+      ))}
+    </div>
   );
 }
 
-function TelaDicaDor({
-  rodada,
+function MiniPlacar({ jogadores, modo }: { jogadores: Jogador[]; modo: ModoJogo }) {
+  const { dupla1, dupla2 } = calcularPlacar(jogadores, modo);
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div className="bg-roxo-claro/50 border border-white/20 rounded-xl px-3 py-2 text-center">
+        <p className="font-pixel text-white/60 text-xs">{dupla1.label}</p>
+        <p className="font-pixel text-amarelo text-2xl">{dupla1.pontos}</p>
+      </div>
+      <div className="bg-verde/30 border border-white/20 rounded-xl px-3 py-2 text-center">
+        <p className="font-pixel text-white/60 text-xs">{dupla2.label}</p>
+        <p className="font-pixel text-verde text-2xl">{dupla2.pontos}</p>
+      </div>
+    </div>
+  );
+}
+
+function TelaDicaDor2v2({
+  palavra,
+  dicasDadas,
   dica,
+  erroDica,
   onChangeDica,
   onEnviarDica,
-  onAcertou,
   onPassar,
-  dicasEnviadas,
+  passouParaAdversario,
 }: {
-  rodada: EstadoRodada;
+  palavra: Palavra;
+  dicasDadas: string[];
   dica: string;
+  erroDica: string;
   onChangeDica: (v: string) => void;
   onEnviarDica: (e: React.FormEvent) => void;
-  onAcertou: () => void;
   onPassar: () => void;
-  dicasEnviadas: string[];
+  passouParaAdversario: boolean;
 }) {
+  if (passouParaAdversario) {
+    return (
+      <Card variante="roxo" padding="md" className="bg-white/10 border-white/20 text-center">
+        <p className="font-corpo text-white font-black">Adversário está tentando…</p>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-3">
-      {/* Palavra secreta */}
+      {/* Palavra a ser descrita */}
       <Card variante="amarelo" padding="md" className="text-center">
-        <p className="font-pixel text-roxo/60 text-xs mb-1">PALAVRA SECRETA</p>
-        <p className="font-pixel text-roxo-escuro text-3xl leading-tight">
-          {rodada.palavraAtual?.palavra ?? "—"}
+        <p className="font-corpo text-roxo/50 text-xs font-bold uppercase mb-1">
+          Descreva com 1 palavra por vez
         </p>
-        <p className="font-corpo text-roxo/60 text-xs mt-1">
-          {rodada.palavraAtual?.categoria}
+        <p className="font-pixel text-roxo-escuro text-3xl leading-tight break-all">
+          {palavra.palavra}
         </p>
-        <p className="font-corpo text-roxo/40 text-xs mt-1">
-          Dê dicas sem falar a palavra!
-        </p>
+        <p className="font-corpo text-roxo/50 text-xs mt-1">{palavra.categoria}</p>
       </Card>
 
-      {/* Input de dica */}
-      <form onSubmit={onEnviarDica} className="flex gap-2">
-        <input
-          type="text"
-          value={dica}
-          onChange={(e) => onChangeDica(e.target.value)}
-          placeholder="Digite uma dica..."
-          maxLength={40}
-          autoComplete="off"
-          className="flex-1 px-4 py-3 rounded-xl border-2 border-roxo bg-white font-corpo font-bold text-roxo-escuro placeholder-gray-400 focus:outline-none focus:border-amarelo text-lg"
-        />
-        <Button type="submit" variante="primario" tamanho="md" disabled={!dica.trim()}>
-          ↵
-        </Button>
-      </form>
-
       {/* Dicas enviadas */}
-      {dicasEnviadas.length > 0 && (
+      {dicasDadas.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {dicasEnviadas.map((d, i) => (
-            <span key={i} className="bg-white/20 text-white px-3 py-1 rounded-full font-corpo font-bold text-sm">
+          {dicasDadas.map((d, i) => (
+            <span key={i} className="bg-white text-roxo-escuro border-2 border-roxo px-3 py-1 rounded-full font-corpo font-black text-sm shadow-brutal-sm">
               {d}
             </span>
           ))}
         </div>
       )}
 
-      {/* Botões de ação */}
-      <div className="grid grid-cols-2 gap-2">
-        <Button variante="secundario" tamanho="lg" onClick={onAcertou} icone={<span>✅</span>}>
-          Acertou!
-        </Button>
-        <Button variante="perigo" tamanho="lg" onClick={onPassar} icone={<span>⏭️</span>}>
-          Passar
-        </Button>
-      </div>
+      {/* Input de dica */}
+      <form onSubmit={onEnviarDica} className="flex gap-2">
+        <input
+          type="text"
+          value={dica}
+          onChange={(e) => onChangeDica(e.target.value.replace(/\s/g, ""))}
+          placeholder="1 palavra como dica..."
+          maxLength={30}
+          autoComplete="off"
+          className="flex-1 px-4 py-3 rounded-xl border-2 border-roxo bg-white font-corpo font-bold text-roxo-escuro placeholder-gray-400 focus:outline-none focus:border-amarelo text-lg"
+        />
+        <Button type="submit" variante="primario" disabled={!dica.trim()}>↵</Button>
+      </form>
+      {erroDica && (
+        <p className="text-amarelo font-corpo font-bold text-sm">{erroDica}</p>
+      )}
 
-      {/* Tabela de palavras */}
-      <TabelaPalavras
-        palavras={rodada.todasPalavras}
-        palavraAtualIdx={rodada.palavraIdx}
-        acertos={rodada.acertos}
-        mostrarPalavras={true}
-      />
+      <Button variante="perigo" tamanho="md" larguraTotal onClick={onPassar} icone={<span>⏭️</span>}>
+        Passar para adversário
+      </Button>
     </div>
   );
 }
 
 function TelaAdivinhador({
-  rodada,
   dicas,
-  onAcertou,
+  palpite,
+  onChangePalpite,
+  onEnviarPalpite,
+  flashErro,
+  jaErrei,
+  modo,
+  isRuoubo = false,
 }: {
-  rodada: EstadoRodada;
   dicas: string[];
-  onAcertou: () => void;
+  palpite: string;
+  onChangePalpite: (v: string) => void;
+  onEnviarPalpite: (e: React.FormEvent) => void;
+  flashErro: boolean;
+  jaErrei: boolean;
+  modo: ModoJogo;
+  isRuoubo?: boolean;
 }) {
   return (
     <div className="space-y-3">
-      <Card variante="roxo" padding="md" className="bg-roxo-claro text-center">
-        <p className="font-pixel text-white/60 text-xs mb-1">VOCÊ É O ADIVINHADOR</p>
-        <p className="font-corpo font-black text-white text-lg">
-          Escute as dicas e responda!
-        </p>
-      </Card>
-
-      {/* Dicas chegando */}
-      <Card variante="padrao" padding="md">
-        <p className="font-corpo font-black text-gray-500 text-xs uppercase mb-3">
-          Dicas ({dicas.length})
-        </p>
-        {dicas.length === 0 ? (
-          <div className="text-center py-4">
-            <div className="flex justify-center gap-1">
-              {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="w-2 h-2 bg-roxo/30 rounded-full animate-pulse"
-                  style={{ animationDelay: `${i * 0.2}s` }}
-                />
-              ))}
-            </div>
-            <p className="font-corpo text-gray-400 text-sm mt-2">Aguardando dicas...</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {dicas.map((d, i) => (
-              <div key={i} className="flex items-center gap-2 animate-slide-up">
-                <span className="font-pixel text-roxo text-xs">{i + 1}.</span>
-                <span className="font-corpo font-bold text-roxo-escuro text-lg">{d}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      <Button
-        variante="amarelo"
-        tamanho="xl"
-        larguraTotal
-        onClick={onAcertou}
-        icone={<span>✅</span>}
-      >
-        Acertei!
-      </Button>
-
-      <TabelaPalavras
-        palavras={rodada.todasPalavras}
-        palavraAtualIdx={rodada.palavraIdx}
-        acertos={rodada.acertos}
-        mostrarPalavras={false}
-      />
-    </div>
-  );
-}
-
-function TelaEspectador({
-  rodada,
-  dicas,
-  papel,
-  onRoubar,
-}: {
-  rodada: EstadoRodada;
-  dicas: string[];
-  papel: string;
-  onRoubar?: () => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <Card variante="roxo" padding="md" className="bg-white/10 border-white/20 text-center">
-        <p className="font-pixel text-white/60 text-xs mb-1">
-          {papel === "adversario" ? "VOCÊ É O ADVERSÁRIO" : "ESPECTADOR"}
-        </p>
-        <p className="font-corpo font-black text-white text-base">
-          {papel === "adversario"
-            ? "Se a dupla errar, você pode roubar o ponto!"
-            : "Acompanhe o jogo!"}
-        </p>
-      </Card>
+      {isRuoubo && (
+        <Card variante="amarelo" padding="sm" className="text-center">
+          <p className="font-pixel text-roxo-escuro text-xs">ROUBO! Palavra passou pra vocês 💥</p>
+        </Card>
+      )}
 
       {/* Dicas */}
       <Card variante="padrao" padding="md">
         <p className="font-corpo font-black text-gray-500 text-xs uppercase mb-3">
-          Dicas em tempo real
+          {modo === "1v1" ? "Dicas do bot" : "Dicas da dupla"} ({dicas.length})
         </p>
         {dicas.length === 0 ? (
-          <p className="font-corpo text-gray-400 text-sm text-center py-2">
-            Aguardando dicas...
-          </p>
+          <div className="text-center py-4">
+            <div className="flex justify-center gap-1 mb-2">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="w-2 h-2 bg-roxo/30 rounded-full animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+              ))}
+            </div>
+            <p className="font-corpo text-gray-400 text-sm">Aguardando dicas...</p>
+          </div>
         ) : (
-          <div className="space-y-2">
+          <div className="flex flex-wrap gap-2">
             {dicas.map((d, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <span className="font-pixel text-roxo text-xs">{i + 1}.</span>
-                <span className="font-corpo font-bold text-roxo-escuro text-lg">{d}</span>
-              </div>
+              <span key={i} className="bg-roxo text-white px-3 py-1.5 rounded-full font-corpo font-black text-base shadow-brutal-sm animate-slide-up">
+                {d}
+              </span>
             ))}
           </div>
         )}
       </Card>
 
-      {papel === "adversario" && onRoubar && (
-        <Button
-          variante="perigo"
-          tamanho="xl"
-          larguraTotal
-          onClick={onRoubar}
-          icone={<span>💥</span>}
-        >
-          Roubar Ponto!
-        </Button>
+      {/* Input de palpite */}
+      {!jaErrei ? (
+        <form onSubmit={onEnviarPalpite} className="flex gap-2">
+          <input
+            type="text"
+            value={palpite}
+            onChange={(e) => onChangePalpite(e.target.value.replace(/\s/g, ""))}
+            placeholder="Qual a palavra?"
+            maxLength={40}
+            autoComplete="off"
+            autoFocus
+            className={`flex-1 px-4 py-3 rounded-xl border-2 font-corpo font-black text-roxo-escuro placeholder-gray-400 focus:outline-none text-xl transition-colors ${
+              flashErro
+                ? "border-vermelho bg-vermelho/10 focus:border-vermelho animate-wiggle"
+                : "border-roxo bg-white focus:border-amarelo"
+            }`}
+          />
+          <Button type="submit" variante="amarelo" tamanho="lg" disabled={!palpite.trim()}>
+            ✓
+          </Button>
+        </form>
+      ) : (
+        <Card variante="roxo" padding="md" className="bg-vermelho/20 border-vermelho text-center">
+          <p className="font-corpo font-black text-white">❌ Você errou — aguarde o outro jogador</p>
+        </Card>
       )}
-
-      <TabelaPalavras
-        palavras={rodada.todasPalavras}
-        palavraAtualIdx={rodada.palavraIdx}
-        acertos={rodada.acertos}
-        mostrarPalavras={false}
-      />
     </div>
   );
 }
 
-function TelaEntreRodadas({
-  rodadaNumero,
-  proximaDuplaVez,
-  jogadores,
-  onContinuar,
-  isHost,
-}: {
-  rodadaNumero: number;
-  proximaDuplaVez: 1 | 2;
-  jogadores: Jogador[];
-  onContinuar: () => void;
-  isHost: boolean;
-}) {
+function TelaAdversarioEsperando({ dicas }: { dicas: string[] }) {
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center px-4">
-      <div className="max-w-lg w-full space-y-5">
-        <div className="text-center">
-          <p className="font-pixel text-white/60 text-xs mb-2">RODADA ENCERRADA</p>
-          <p className="font-pixel text-amarelo text-2xl">
-            Rodada {rodadaNumero} ok!
-          </p>
+    <Card variante="padrao" padding="md">
+      <p className="font-corpo font-black text-gray-500 text-xs uppercase mb-3">
+        Dicas em tempo real
+      </p>
+      {dicas.length === 0 ? (
+        <p className="font-corpo text-gray-400 text-sm text-center py-2">Aguardando dicas…</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {dicas.map((d, i) => (
+            <span key={i} className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-corpo font-bold text-sm">
+              {d}
+            </span>
+          ))}
         </div>
-
-        <Placar jogadores={jogadores} />
-
-        <Card variante="amarelo" padding="md" className="text-center">
-          <p className="font-corpo font-black text-roxo-escuro text-xl">
-            Dupla {proximaDuplaVez} se prepara!
-          </p>
-          <div className="flex justify-center gap-2 flex-wrap mt-2">
-            {jogadores
-              .filter((j) => j.dupla === proximaDuplaVez && j.ativo)
-              .map((j) => (
-                <span
-                  key={j.id}
-                  className="bg-roxo text-white px-3 py-1 rounded-full font-corpo font-bold text-sm"
-                >
-                  {j.apelido}
-                </span>
-              ))}
-          </div>
-        </Card>
-
-        {isHost ? (
-          <Button
-            variante="primario"
-            tamanho="xl"
-            larguraTotal
-            onClick={onContinuar}
-            icone={<span>▶️</span>}
-          >
-            Continuar
-          </Button>
-        ) : (
-          <Card variante="roxo" padding="sm" className="bg-white/10 border-white/20 text-center">
-            <p className="font-corpo text-white/70 text-sm font-bold">
-              Aguardando a dupla continuar...
-            </p>
-          </Card>
-        )}
-      </div>
-    </main>
+      )}
+      <p className="text-center font-corpo text-gray-400 text-xs mt-3">
+        Se a dupla adversária errar, a palavra passa pra vocês!
+      </p>
+    </Card>
   );
 }
 
-function TelaFimDeJogo({
+function TelaFim({
   jogadores,
+  modo,
   codigo,
-  onJogarNovamente,
+  onReiniciar,
 }: {
   jogadores: Jogador[];
+  modo: ModoJogo;
   codigo: string;
-  onJogarNovamente: () => void;
+  onReiniciar: () => void;
 }) {
+  const { dupla1, dupla2 } = calcularPlacar(jogadores, modo);
+  const vencedor = quemGanhou(dupla1, dupla2);
+  const d1 = jogadoresPorDupla(jogadores, 1);
+  const d2 = jogadoresPorDupla(jogadores, 2);
+
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-4">
-      <div className="max-w-lg w-full space-y-5">
+      <div className="max-w-lg w-full space-y-4">
         <div className="text-center">
-          <p className="font-pixel text-white text-3xl animate-pulse-scale">
-            🏆 FIM DE JOGO!
-          </p>
-          <p className="font-corpo text-white/70 text-base mt-2 font-bold">
-            Resultado final
+          <p className="font-pixel text-white text-2xl animate-pulse-scale">🏆 FIM!</p>
+          <p className="font-corpo text-white/60 font-bold mt-1">
+            {vencedor === "empate"
+              ? "Empate!"
+              : modo === "1v1"
+              ? `${vencedor === 1 ? d1[0]?.apelido : d2[0]?.apelido} venceu!`
+              : `Dupla ${vencedor} venceu!`}
           </p>
         </div>
 
-        <Placar jogadores={jogadores} finalizado grande />
+        {/* Placar */}
+        <div className="grid grid-cols-2 gap-3">
+          {[{ pd: dupla1, jogs: d1 }, { pd: dupla2, jogs: d2 }].map(({ pd, jogs }) => (
+            <div
+              key={pd.dupla}
+              className={`rounded-xl border-4 p-5 text-center ${
+                vencedor === pd.dupla
+                  ? "border-amarelo bg-amarelo/20"
+                  : "border-white/20 bg-white/5"
+              }`}
+            >
+              <p className="font-pixel text-white/60 text-xs mb-2">{pd.label}</p>
+              <p className={`font-pixel text-6xl mb-3 ${vencedor === pd.dupla ? "text-amarelo" : "text-white/70"}`}>
+                {pd.pontos}
+              </p>
+              {jogs.map((j) => (
+                <p key={j.id} className="font-corpo font-black text-white text-sm">{j.apelido}</p>
+              ))}
+              {vencedor === pd.dupla && (
+                <p className="font-pixel text-amarelo text-xs mt-2">VENCEDOR 🏆</p>
+              )}
+            </div>
+          ))}
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Button
-            variante="amarelo"
-            tamanho="lg"
-            larguraTotal
-            onClick={onJogarNovamente}
-            icone={<span>🔄</span>}
-          >
+          <Button variante="amarelo" tamanho="lg" larguraTotal onClick={onReiniciar} icone={<span>🔄</span>}>
             Jogar de novo
           </Button>
           <Link href="/" className="block">
@@ -862,11 +868,7 @@ function TelaFimDeJogo({
           </Link>
         </div>
 
-        <Link
-          href={`/jogo/adivinhe-palavras/${codigo}/placar`}
-          target="_blank"
-          className="block"
-        >
+        <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank" className="block">
           <Button variante="secundario" tamanho="md" larguraTotal icone={<span>📊</span>}>
             Ver Placar na TV
           </Button>

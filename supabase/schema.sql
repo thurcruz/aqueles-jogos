@@ -1,6 +1,6 @@
 -- ============================================================
---  AQUELES JOGOS — Schema do Banco de Dados
---  Execute este arquivo no SQL Editor do Supabase
+--  AQUELES JOGOS — Schema v2
+--  Execute no SQL Editor do Supabase
 -- ============================================================
 
 -- Salas de jogo
@@ -10,8 +10,9 @@ create table if not exists salas (
   status text default 'aguardando' check (status in ('aguardando', 'jogando', 'encerrada')),
   host_id text not null,
   jogo text default 'adivinhe-palavras',
-  config jsonb default '{"rodadas": 5, "tempo_por_rodada": 60}',
-  rodada_atual int default 0,
+  -- config: { modo: '1v1'|'2v2', num_palavras: 5..10 }
+  config jsonb default '{"modo": "2v2", "num_palavras": 7}',
+  palavra_atual_idx int default 0,
   criado_em timestamp with time zone default now()
 );
 
@@ -26,65 +27,46 @@ create table if not exists jogadores (
   entrou_em timestamp with time zone default now()
 );
 
--- Palavras do jogo
+-- Palavras do jogo (com dicas pré-definidas para o modo 1v1 bot)
 create table if not exists palavras (
   id uuid default gen_random_uuid() primary key,
   categoria text not null,
   palavra text not null,
+  dicas text[] default '{}',   -- dicas do bot para modo 1v1
   dificuldade int default 1 check (dificuldade in (1, 2, 3))
 );
 
--- Rodadas de cada partida
-create table if not exists rodadas (
-  id uuid default gen_random_uuid() primary key,
-  sala_id uuid references salas(id) on delete cascade,
-  numero int not null,
-  palavra_id uuid references palavras(id),
-  dupla_vez int not null check (dupla_vez in (1, 2)),
-  status text default 'ativa' check (status in ('ativa', 'acertou', 'errou', 'tempo')),
-  iniciou_em timestamp with time zone,
-  encerrou_em timestamp with time zone
-);
-
--- Eventos em tempo real
+-- Eventos em tempo real (dicas, acertos, próxima palavra, etc.)
 create table if not exists eventos (
   id uuid default gen_random_uuid() primary key,
   sala_id uuid references salas(id) on delete cascade,
-  tipo text not null check (tipo in ('dica', 'acertou', 'ponto', 'proximo', 'timer', 'iniciar', 'fim')),
+  tipo text not null check (tipo in (
+    'iniciar', 'dica', 'dica_bot', 'palpite',
+    'acertou', 'passou', 'proxima_palavra', 'fim'
+  )),
   payload jsonb default '{}',
   criado_em timestamp with time zone default now()
 );
 
 -- ─── Índices ──────────────────────────────────────────────────────────────
-
 create index if not exists idx_salas_codigo on salas(codigo);
 create index if not exists idx_jogadores_sala_id on jogadores(sala_id);
-create index if not exists idx_rodadas_sala_id on rodadas(sala_id);
 create index if not exists idx_eventos_sala_id on eventos(sala_id);
 create index if not exists idx_eventos_tipo on eventos(tipo);
 create index if not exists idx_palavras_categoria on palavras(categoria);
 
 -- ─── Row Level Security ───────────────────────────────────────────────────
-
 alter table salas enable row level security;
 alter table jogadores enable row level security;
 alter table palavras enable row level security;
-alter table rodadas enable row level security;
 alter table eventos enable row level security;
 
--- Políticas permissivas (sem autenticação obrigatória)
--- Em produção, considere restringir estas políticas
-
-create policy "Salas são públicas" on salas for all using (true) with check (true);
-create policy "Jogadores são públicos" on jogadores for all using (true) with check (true);
-create policy "Palavras são públicas" on palavras for select using (true);
-create policy "Rodadas são públicas" on rodadas for all using (true) with check (true);
-create policy "Eventos são públicos" on eventos for all using (true) with check (true);
+create policy "Salas públicas"    on salas    for all using (true) with check (true);
+create policy "Jogadores públicos" on jogadores for all using (true) with check (true);
+create policy "Palavras públicas"  on palavras  for select using (true);
+create policy "Eventos públicos"   on eventos   for all using (true) with check (true);
 
 -- ─── Habilitar Realtime ───────────────────────────────────────────────────
--- Execute estes comandos no SQL Editor ou na aba Realtime do Supabase
-
 alter publication supabase_realtime add table salas;
 alter publication supabase_realtime add table jogadores;
-alter publication supabase_realtime add table rodadas;
 alter publication supabase_realtime add table eventos;

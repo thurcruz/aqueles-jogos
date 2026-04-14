@@ -1,121 +1,154 @@
-import type { Jogador, PlacarDupla, Dupla } from "@/types/game";
+import type { Jogador, PlacarDupla, Dupla, ModoJogo } from "@/types/game";
 
-// ─── Lógica de Placar ─────────────────────────────────────────────────────
+// ─── Placar ───────────────────────────────────────────────────────────────
 
-export function calcularPlacar(jogadores: Jogador[]): {
-  dupla1: PlacarDupla;
-  dupla2: PlacarDupla;
-} {
-  const dupla1Jogadores = jogadores.filter((j) => j.dupla === 1 && j.ativo);
-  const dupla2Jogadores = jogadores.filter((j) => j.dupla === 2 && j.ativo);
+export function calcularPlacar(
+  jogadores: Jogador[],
+  modo: ModoJogo = "2v2"
+): { dupla1: PlacarDupla; dupla2: PlacarDupla } {
+  const d1 = jogadores.filter((j) => j.dupla === 1 && j.ativo);
+  const d2 = jogadores.filter((j) => j.dupla === 2 && j.ativo);
+
+  if (modo === "1v1") {
+    return {
+      dupla1: {
+        dupla: 1,
+        label: d1[0]?.apelido ?? "Jogador 1",
+        pontos: d1.reduce((s, j) => s + j.pontos, 0),
+        jogadores: d1,
+      },
+      dupla2: {
+        dupla: 2,
+        label: d2[0]?.apelido ?? "Jogador 2",
+        pontos: d2.reduce((s, j) => s + j.pontos, 0),
+        jogadores: d2,
+      },
+    };
+  }
 
   return {
     dupla1: {
       dupla: 1,
-      pontos: dupla1Jogadores.reduce((acc, j) => acc + j.pontos, 0),
-      jogadores: dupla1Jogadores,
+      label: "Dupla 1",
+      pontos: d1.reduce((s, j) => s + j.pontos, 0),
+      jogadores: d1,
     },
     dupla2: {
       dupla: 2,
-      pontos: dupla2Jogadores.reduce((acc, j) => acc + j.pontos, 0),
-      jogadores: dupla2Jogadores,
+      label: "Dupla 2",
+      pontos: d2.reduce((s, j) => s + j.pontos, 0),
+      jogadores: d2,
     },
   };
 }
 
-export function quemGanhou(dupla1: PlacarDupla, dupla2: PlacarDupla): Dupla | "empate" {
+export function quemGanhou(
+  dupla1: PlacarDupla,
+  dupla2: PlacarDupla
+): Dupla | "empate" {
   if (dupla1.pontos > dupla2.pontos) return 1;
   if (dupla2.pontos > dupla1.pontos) return 2;
   return "empate";
 }
 
-// ─── Lógica de Rodadas ────────────────────────────────────────────────────
+// ─── Papéis em 2v2 ───────────────────────────────────────────────────────
 
-export function proximaDupla(duplaAtual: Dupla): Dupla {
-  return duplaAtual === 1 ? 2 : 1;
-}
+export type PapelNaRodada =
+  | "dica-dor"      // da equipe da vez: vê a palavra, digita dicas
+  | "adivinhador"   // da equipe da vez: vê as dicas, tenta acertar
+  | "adversario"    // equipe adversária (pode tomar a palavra se a vez passar)
+  | "espectador";   // não está participando ativamente
 
-export function calcularTotalRodadas(rodadas: number): number {
-  // Cada dupla joga o número configurado de rodadas
-  return rodadas * 2;
-}
-
-// ─── Validação de Sala ────────────────────────────────────────────────────
-
-export function salaTemJogadoresSuficientes(jogadores: Jogador[]): boolean {
-  const temDupla1 = jogadores.some((j) => j.dupla === 1 && j.ativo);
-  const temDupla2 = jogadores.some((j) => j.dupla === 2 && j.ativo);
-  return temDupla1 && temDupla2;
-}
-
-export function jogadoresPorDupla(jogadores: Jogador[], dupla: Dupla): Jogador[] {
-  return jogadores.filter((j) => j.dupla === dupla && j.ativo);
-}
-
-// ─── Timer ────────────────────────────────────────────────────────────────
-
-export function formatarTempo(segundos: number): string {
-  if (segundos <= 0) return "0";
-  return String(segundos);
-}
-
-export function calcularCorTimer(segundos: number, total: number): string {
-  const pct = segundos / total;
-  if (pct > 0.5) return "text-verde";
-  if (pct > 0.25) return "text-amarelo";
-  return "text-vermelho";
-}
-
-// ─── Geração de Palavras ──────────────────────────────────────────────────
-
-export function sortearPalavrasDaRodada<T>(palavras: T[], quantidade: number): T[] {
-  const embaralhadas = [...palavras].sort(() => Math.random() - 0.5);
-  return embaralhadas.slice(0, quantidade);
-}
-
-// ─── Papel do Jogador na Rodada ───────────────────────────────────────────
-
-export type PapelNaRodada = "dica-dor" | "adivinhador" | "adversario" | "espectador";
-
-export function determinarPapel(
+export function determinarPapel2v2(
   jogadorId: string,
-  duplaVez: Dupla,
-  jogadores: Jogador[],
-  duplaVezPrimeiro?: string // ID do jogador que dá as dicas
+  vezDupla: Dupla,
+  passouParaAdversario: boolean,
+  jogadores: Jogador[]
 ): PapelNaRodada {
   const jogador = jogadores.find((j) => j.id === jogadorId);
   if (!jogador) return "espectador";
 
-  if (jogador.dupla !== duplaVez) return "adversario";
+  // Equipe que está "tentando" agora
+  const duplaAtiva = passouParaAdversario
+    ? vezDupla === 1 ? 2 : 1
+    : vezDupla;
 
-  // Na dupla da vez: o primeiro é dica-dor, o segundo é adivinhador
-  const jogadoresDaDupla = jogadores
-    .filter((j) => j.dupla === duplaVez && j.ativo)
+  const jogadoresDaDuplaAtiva = jogadores
+    .filter((j) => j.dupla === duplaAtiva && j.ativo)
     .sort((a, b) => new Date(a.entrou_em).getTime() - new Date(b.entrou_em).getTime());
 
-  if (jogadoresDaDupla.length === 0) return "espectador";
+  if (jogador.dupla !== duplaAtiva) return "adversario";
 
-  if (duplaVezPrimeiro) {
-    if (jogadorId === duplaVezPrimeiro) return "dica-dor";
-    return "adivinhador";
-  }
-
-  if (jogadoresDaDupla[0]?.id === jogadorId) return "dica-dor";
+  // O primeiro a entrar na dupla é o dica-dor
+  if (jogadoresDaDuplaAtiva[0]?.id === jogadorId) return "dica-dor";
   return "adivinhador";
 }
 
-// ─── Dados dos Jogos (Home) ───────────────────────────────────────────────
+// ─── Validação de dica ────────────────────────────────────────────────────
+
+/** Dica deve ser exatamente 1 palavra, sem espaços */
+export function validarDica(dica: string): {
+  valida: boolean;
+  erro?: string;
+} {
+  const limpa = dica.trim();
+  if (!limpa) return { valida: false, erro: "Digite uma palavra" };
+  if (/\s/.test(limpa))
+    return { valida: false, erro: "A dica deve ser apenas 1 palavra!" };
+  if (limpa.length > 30)
+    return { valida: false, erro: "Palavra muito longa" };
+  return { valida: true };
+}
+
+/** Palpite deve ser exatamente 1 palavra */
+export function validarPalpite(palpite: string): boolean {
+  const limpo = palpite.trim();
+  return limpo.length > 0 && !/\s/.test(limpo);
+}
+
+// ─── Validação de sala ────────────────────────────────────────────────────
+
+export function salaTemJogadoresSuficientes(
+  jogadores: Jogador[],
+  modo: ModoJogo
+): boolean {
+  const d1 = jogadores.filter((j) => j.dupla === 1 && j.ativo);
+  const d2 = jogadores.filter((j) => j.dupla === 2 && j.ativo);
+  if (modo === "1v1") return d1.length >= 1 && d2.length >= 1;
+  // 2v2: ao menos 2 por dupla
+  return d1.length >= 2 && d2.length >= 2;
+}
+
+export function jogadoresPorDupla(
+  jogadores: Jogador[],
+  dupla: Dupla
+): Jogador[] {
+  return jogadores
+    .filter((j) => j.dupla === dupla && j.ativo)
+    .sort(
+      (a, b) =>
+        new Date(a.entrou_em).getTime() - new Date(b.entrou_em).getTime()
+    );
+}
+
+// ─── Utilitários ──────────────────────────────────────────────────────────
+
+export function outraDupla(dupla: Dupla): Dupla {
+  return dupla === 1 ? 2 : 1;
+}
+
+// ─── Jogos disponíveis ────────────────────────────────────────────────────
 
 export const JOGOS_DISPONIVEIS = [
   {
     id: "adivinhe-palavras",
     nome: "Adivinhe as Palavras",
-    descricao: "Dê dicas para seu parceiro adivinhar a palavra antes do tempo acabar!",
+    descricao:
+      "Dê dicas (só palavras!) para seu parceiro adivinhar antes do adversário!",
     icone: "💬",
     disponivel: true,
     minJogadores: 2,
     maxJogadores: 8,
-    cor: "#5B1FA8",
   },
   {
     id: "quem-sou-eu",
@@ -125,7 +158,6 @@ export const JOGOS_DISPONIVEIS = [
     disponivel: false,
     minJogadores: 2,
     maxJogadores: 10,
-    cor: "#0F766E",
   },
   {
     id: "jogo-da-forca",
@@ -135,16 +167,14 @@ export const JOGOS_DISPONIVEIS = [
     disponivel: false,
     minJogadores: 2,
     maxJogadores: 6,
-    cor: "#B45309",
   },
   {
     id: "o-impostor",
     nome: "O Impostor",
-    descricao: "Descubra quem é o impostor no grupo antes que seja tarde!",
+    descricao: "Descubra quem é o impostor antes que seja tarde!",
     icone: "🕵️",
     disponivel: false,
     minJogadores: 4,
     maxJogadores: 12,
-    cor: "#BE123C",
   },
 ];

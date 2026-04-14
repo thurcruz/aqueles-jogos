@@ -8,13 +8,16 @@ import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PlayerChip from "@/components/ui/PlayerChip";
 import { useSala } from "@/hooks/useSala";
-import { carregarDadosLocais, supabase, buscarPalavrasAleatorias, criarRodada } from "@/lib/supabase";
+import {
+  carregarDadosLocais,
+  supabase,
+  buscarPalavrasAleatorias,
+} from "@/lib/supabase";
 import {
   salaTemJogadoresSuficientes,
   jogadoresPorDupla,
-  calcularTotalRodadas,
 } from "@/lib/gameLogic";
-import type { Jogador } from "@/types/game";
+import type { Jogador, ModoJogo } from "@/types/game";
 
 export default function SalaPage() {
   const params = useParams();
@@ -35,20 +38,20 @@ export default function SalaPage() {
     jogadorId: dadosLocais?.jogador_id,
   });
 
-  // Redirecionar se o jogo já iniciou
   useEffect(() => {
     if (sala?.status === "jogando") {
       router.push(`/jogo/adivinhe-palavras/${codigo}`);
     }
   }, [sala?.status, codigo, router]);
 
-  // Verifica se é host (só no cliente)
   useEffect(() => {
     if (!dadosLocais || !sala) return;
     setIsHost(localStorage.getItem("aj_sala_host_id") === sala.host_id);
   }, [dadosLocais, sala]);
 
-  const podeiniciar = salaTemJogadoresSuficientes(jogadores);
+  const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
+  const numPalavras: number = sala?.config?.num_palavras ?? 7;
+  const podeiniciar = salaTemJogadoresSuficientes(jogadores, modo);
   const dupla1 = jogadoresPorDupla(jogadores, 1);
   const dupla2 = jogadoresPorDupla(jogadores, 2);
 
@@ -57,28 +60,21 @@ export default function SalaPage() {
     setIniciando(true);
 
     try {
-      // Pega palavras suficientes para todas as rodadas
-      const totalRodadas = calcularTotalRodadas(sala.config.rodadas);
-      const palavras = await buscarPalavrasAleatorias(totalRodadas * 5); // 5 por rodada
+      const palavras = await buscarPalavrasAleatorias(numPalavras);
 
-      // Cria a primeira rodada
-      const primeiraPalavra = palavras[0];
-      await criarRodada(sala.id, 1, primeiraPalavra.id, 1);
-
-      // Salva as palavras no payload de um evento para que todos acessem
       await supabase.from("eventos").insert({
         sala_id: sala.id,
         tipo: "iniciar",
         payload: {
           palavras_ids: palavras.map((p) => p.id),
-          total_rodadas: totalRodadas,
+          num_palavras: numPalavras,
+          modo,
         },
       });
 
-      // Atualiza status da sala para jogando
       await supabase
         .from("salas")
-        .update({ status: "jogando", rodada_atual: 1 })
+        .update({ status: "jogando", palavra_atual_idx: 0 })
         .eq("id", sala.id);
 
       router.push(`/jogo/adivinhe-palavras/${codigo}`);
@@ -86,15 +82,13 @@ export default function SalaPage() {
       console.error("Erro ao iniciar jogo:", err);
       setIniciando(false);
     }
-  }, [sala, podeiniciar, codigo, router]);
+  }, [sala, podeiniciar, codigo, router, numPalavras, modo]);
 
   if (carregando) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="font-pixel text-amarelo text-sm animate-pulse mb-2">
-            Carregando sala...
-          </div>
+          <div className="font-pixel text-amarelo text-sm animate-pulse mb-2">Carregando sala...</div>
           <div className="font-pixel text-white/40 text-xs">{codigo}</div>
         </div>
       </div>
@@ -109,9 +103,7 @@ export default function SalaPage() {
             {erro ?? "Sala não encontrada"}
           </p>
           <Link href="/lobby">
-            <Button variante="primario" larguraTotal>
-              Voltar ao Lobby
-            </Button>
+            <Button variante="primario" larguraTotal>Voltar ao Lobby</Button>
           </Link>
         </Card>
       </div>
@@ -119,19 +111,22 @@ export default function SalaPage() {
   }
 
   const urlSala = `${urlAtual}/lobby?codigo=${codigo}`;
+  const minJogadoresMensagem =
+    modo === "1v1"
+      ? "Precisa de 1 jogador em cada lado"
+      : "Precisa de 2 jogadores em cada dupla";
 
   return (
     <main className="min-h-screen flex flex-col px-4 py-6">
       <div className="max-w-lg mx-auto w-full space-y-4">
-        {/* Header da sala */}
+
+        {/* Header */}
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="font-corpo text-white/60 text-sm font-bold uppercase tracking-wide">
               Sala de Espera
             </p>
-            <h1 className="font-pixel text-amarelo text-2xl text-sombra mt-1">
-              {codigo}
-            </h1>
+            <h1 className="font-pixel text-amarelo text-2xl text-sombra mt-1">{codigo}</h1>
           </div>
           <div className="text-right">
             <p className="font-corpo text-white/60 text-xs">
@@ -139,19 +134,39 @@ export default function SalaPage() {
             </p>
             <div className="flex items-center justify-end gap-1 mt-1">
               <div className="w-2 h-2 bg-verde rounded-full animate-pulse" />
-              <span className="font-corpo text-verde text-xs font-bold">
-                Aguardando
-              </span>
+              <span className="font-corpo text-verde text-xs font-bold">Aguardando</span>
             </div>
           </div>
         </div>
 
-        {/* Código para compartilhar */}
+        {/* Código */}
         <Card variante="padrao" padding="sm" className="text-center">
           <p className="font-corpo text-gray-500 text-xs mb-1 uppercase font-bold tracking-wide">
             Compartilhe o código
           </p>
           <p className="font-pixel text-roxo text-3xl tracking-widest">{codigo}</p>
+        </Card>
+
+        {/* Modo e palavras */}
+        <Card variante="padrao" padding="sm">
+          <div className="flex items-center justify-around text-center">
+            <div>
+              <p className="font-pixel text-roxo text-lg uppercase">{modo}</p>
+              <p className="font-corpo text-gray-500 text-xs font-bold">modo</p>
+            </div>
+            <div className="w-px h-8 bg-gray-200" />
+            <div>
+              <p className="font-pixel text-roxo text-lg">{numPalavras}</p>
+              <p className="font-corpo text-gray-500 text-xs font-bold">palavras</p>
+            </div>
+            <div className="w-px h-8 bg-gray-200" />
+            <div>
+              <p className="font-pixel text-roxo text-lg">
+                {modo === "1v1" ? "2" : "4"}
+              </p>
+              <p className="font-corpo text-gray-500 text-xs font-bold">jogadores</p>
+            </div>
+          </div>
         </Card>
 
         {/* QR Code */}
@@ -161,26 +176,16 @@ export default function SalaPage() {
               QR Code para entrar
             </p>
             <div className="bg-white p-3 rounded-xl border-2 border-roxo/20">
-              <QRCodeSVG
-                value={urlSala}
-                size={160}
-                bgColor="#ffffff"
-                fgColor="#3A0F80"
-                level="M"
-              />
+              <QRCodeSVG value={urlSala} size={140} bgColor="#ffffff" fgColor="#3A0F80" level="M" />
             </div>
-            <p className="font-corpo text-gray-400 text-xs text-center">
-              Escaneie para entrar na sala
-            </p>
           </Card>
         )}
 
         {/* Duplas */}
         <div className="grid grid-cols-2 gap-3">
-          {/* Dupla 1 */}
           <Card variante="roxo" padding="sm" className="bg-roxo-claro/80 border-white/30">
             <h3 className="font-pixel text-white text-xs mb-3 text-center">
-              DUPLA 1
+              {modo === "1v1" ? "JOGADOR 1" : "DUPLA 1"}
             </h3>
             <div className="space-y-2">
               {dupla1.map((j: Jogador) => (
@@ -188,24 +193,18 @@ export default function SalaPage() {
                   key={j.id}
                   jogador={j}
                   isLocal={j.id === dadosLocais?.jogador_id}
-                  isHost={j.id === jogadores[0]?.id && isHost}
-                  onTrocarDupla={
-                    j.id === dadosLocais?.jogador_id ? trocarDupla : undefined
-                  }
+                  onTrocarDupla={j.id === dadosLocais?.jogador_id ? trocarDupla : undefined}
                 />
               ))}
               {dupla1.length === 0 && (
-                <p className="text-white/40 font-corpo text-xs text-center py-2">
-                  Ninguém ainda
-                </p>
+                <p className="text-white/40 font-corpo text-xs text-center py-2">Ninguém ainda</p>
               )}
             </div>
           </Card>
 
-          {/* Dupla 2 */}
           <Card variante="roxo" padding="sm" className="bg-verde/30 border-white/30">
             <h3 className="font-pixel text-white text-xs mb-3 text-center">
-              DUPLA 2
+              {modo === "1v1" ? "JOGADOR 2" : "DUPLA 2"}
             </h3>
             <div className="space-y-2">
               {dupla2.map((j: Jogador) => (
@@ -213,52 +212,24 @@ export default function SalaPage() {
                   key={j.id}
                   jogador={j}
                   isLocal={j.id === dadosLocais?.jogador_id}
-                  onTrocarDupla={
-                    j.id === dadosLocais?.jogador_id ? trocarDupla : undefined
-                  }
+                  onTrocarDupla={j.id === dadosLocais?.jogador_id ? trocarDupla : undefined}
                 />
               ))}
               {dupla2.length === 0 && (
-                <p className="text-white/40 font-corpo text-xs text-center py-2">
-                  Ninguém ainda
-                </p>
+                <p className="text-white/40 font-corpo text-xs text-center py-2">Ninguém ainda</p>
               )}
             </div>
           </Card>
         </div>
 
-        {/* Configurações da sala */}
-        <Card variante="padrao" padding="sm">
-          <div className="flex items-center justify-around text-center">
-            <div>
-              <p className="font-pixel text-roxo text-lg">{sala.config.rodadas}</p>
-              <p className="font-corpo text-gray-500 text-xs font-bold">rodadas/dupla</p>
-            </div>
-            <div className="w-px h-8 bg-gray-200" />
-            <div>
-              <p className="font-pixel text-roxo text-lg">{sala.config.tempo_por_rodada}s</p>
-              <p className="font-corpo text-gray-500 text-xs font-bold">por rodada</p>
-            </div>
-            <div className="w-px h-8 bg-gray-200" />
-            <div>
-              <p className="font-pixel text-roxo text-lg">
-                {calcularTotalRodadas(sala.config.rodadas)}
-              </p>
-              <p className="font-corpo text-gray-500 text-xs font-bold">rodadas total</p>
-            </div>
-          </div>
-        </Card>
-
-        {/* Avisos */}
         {!podeiniciar && (
           <div className="bg-amarelo/20 border-2 border-amarelo rounded-xl px-4 py-3 text-center">
             <p className="font-corpo font-bold text-white text-sm">
-              ⚠️ Precisa de pelo menos 1 jogador em cada dupla para começar
+              ⚠️ {minJogadoresMensagem}
             </p>
           </div>
         )}
 
-        {/* Botão iniciar (só host) */}
         {isHost ? (
           <Button
             variante="amarelo"
@@ -274,15 +245,11 @@ export default function SalaPage() {
         ) : (
           <Card variante="roxo" padding="sm" className="bg-white/10 border-white/20 text-center">
             <p className="font-corpo text-white/70 text-sm font-bold">
-              Aguardando o host iniciar o jogo...
+              Aguardando o host iniciar...
             </p>
             <div className="flex justify-center gap-1 mt-2">
               {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="w-2 h-2 bg-white/40 rounded-full animate-pulse"
-                  style={{ animationDelay: `${i * 0.2}s` }}
-                />
+                <div key={i} className="w-2 h-2 bg-white/40 rounded-full animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
               ))}
             </div>
           </Card>

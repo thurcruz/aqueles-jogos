@@ -1,14 +1,22 @@
 // ─── Tipos do Banco de Dados ───────────────────────────────────────────────
 
 export type StatusSala = "aguardando" | "jogando" | "encerrada";
-export type StatusRodada = "ativa" | "acertou" | "errou" | "tempo";
-export type TipoEvento = "dica" | "acertou" | "ponto" | "proximo" | "timer" | "iniciar" | "fim";
+export type TipoEvento =
+  | "iniciar"
+  | "dica"
+  | "palpite"
+  | "acertou"
+  | "passou"
+  | "proxima_palavra"
+  | "dica_bot"
+  | "fim";
 export type Dificuldade = 1 | 2 | 3;
 export type Dupla = 1 | 2;
+export type ModoJogo = "1v1" | "2v2";
 
 export interface ConfigSala {
-  rodadas: number;
-  tempo_por_rodada: number;
+  modo: ModoJogo;
+  num_palavras: number; // 5–10
 }
 
 export interface Sala {
@@ -18,7 +26,7 @@ export interface Sala {
   host_id: string;
   jogo: string;
   config: ConfigSala;
-  rodada_atual: number;
+  palavra_atual_idx: number; // índice da palavra atual na lista
   criado_em: string;
 }
 
@@ -36,22 +44,8 @@ export interface Palavra {
   id: string;
   categoria: string;
   palavra: string;
+  dicas: string[]; // dicas pré-definidas para modo 1v1 (bot)
   dificuldade: Dificuldade;
-}
-
-export interface Rodada {
-  id: string;
-  sala_id: string;
-  numero: number;
-  palavra_id: string;
-  dupla_vez: Dupla;
-  status: StatusRodada;
-  iniciou_em: string | null;
-  encerrou_em: string | null;
-}
-
-export interface RodadaComPalavra extends Rodada {
-  palavras: Palavra;
 }
 
 export interface Evento {
@@ -62,43 +56,36 @@ export interface Evento {
   criado_em: string;
 }
 
-// ─── Tipos de Estado do Jogo ───────────────────────────────────────────────
+// ─── Estado do jogo no cliente ────────────────────────────────────────────
 
-export type PapelJogador = "dica-dor" | "adivinhador" | "espectador";
+/** Qual é o estado de uma palavra durante a partida */
+export type EstadoPalavra =
+  | "aguardando"       // ainda não começou
+  | "dupla1-tentando"  // dupla 1 está dando dicas / tentando
+  | "dupla2-tentando"  // dupla 2 está tentando (após dupla 1 errar)
+  | "acertou"          // alguém acertou
+  | "nenhum-acertou";  // ambos erraram, passou
 
-export interface EstadoJogo {
-  sala: Sala | null;
-  jogadores: Jogador[];
-  rodadaAtual: RodadaComPalavra | null;
-  eventos: Evento[];
-  papelLocal: PapelJogador;
-  jogadorLocal: Jogador | null;
-}
-
-export interface PlacarDupla {
-  dupla: Dupla;
-  pontos: number;
-  jogadores: Jogador[];
-}
-
-export interface ResultadoRodada {
-  acertou: boolean;
-  dupla: Dupla;
-  palavra: string;
-  pontos_ganhos: number;
+export interface EstadoPartida {
+  palavras: Palavra[];           // lista completa da partida
+  palavraAtualIdx: number;       // índice atual
+  vez: Dupla;                    // qual dupla pode dar dica agora
+  passouParaAdversario: boolean; // dupla 1 errou, dupla 2 tenta
+  dicasDadas: string[];          // dicas visíveis na tela
+  estadoPalavra: EstadoPalavra;
+  // 1v1: índice de qual dica do bot foi revelada
+  dicaBotIdx: number;
+  // jogadores que já erraram nesta palavra (1v1)
+  jaErraram: string[];
 }
 
 // ─── Tipos de Lobby ────────────────────────────────────────────────────────
 
-export interface FormCriarSala {
-  apelido: string;
-  rodadas: number;
-  tempo_por_rodada: number;
-}
-
-export interface FormEntrarSala {
-  apelido: string;
-  codigo: string;
+export interface PlacarDupla {
+  dupla: Dupla | "jogador";
+  label: string;
+  pontos: number;
+  jogadores: Jogador[];
 }
 
 export interface DadosLocais {
@@ -106,32 +93,6 @@ export interface DadosLocais {
   sala_id: string;
   jogador_id: string;
   codigo_sala: string;
-}
-
-// ─── Tipos de Realtime ────────────────────────────────────────────────────
-
-export interface PayloadDica {
-  dica: string;
-  numero: number;
-  jogador_id: string;
-  apelido: string;
-}
-
-export interface PayloadPonto {
-  dupla: Dupla;
-  jogador_id: string;
-  apelido: string;
-  palavra: string;
-}
-
-export interface PayloadTimer {
-  tempo_restante: number;
-  rodada_id: string;
-}
-
-export interface PayloadProximo {
-  proxima_dupla: Dupla;
-  rodada_numero: number;
 }
 
 // ─── Jogos disponíveis ────────────────────────────────────────────────────
@@ -144,5 +105,4 @@ export interface JogoInfo {
   disponivel: boolean;
   minJogadores: number;
   maxJogadores: number;
-  cor: string;
 }

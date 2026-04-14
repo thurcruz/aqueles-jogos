@@ -3,7 +3,6 @@ import type {
   Sala,
   Jogador,
   Palavra,
-  Rodada,
   Evento,
 } from "@/types/game";
 
@@ -24,7 +23,7 @@ export interface Database {
       salas: { Row: Sala; Insert: Omit<Sala, "id" | "criado_em">; Update: Partial<Sala> };
       jogadores: { Row: Jogador; Insert: Omit<Jogador, "id" | "entrou_em">; Update: Partial<Jogador> };
       palavras: { Row: Palavra; Insert: Omit<Palavra, "id">; Update: Partial<Palavra> };
-      rodadas: { Row: Rodada; Insert: Omit<Rodada, "id">; Update: Partial<Rodada> };
+
       eventos: { Row: Evento; Insert: Omit<Evento, "id" | "criado_em">; Update: Partial<Evento> };
     };
   };
@@ -139,56 +138,6 @@ export async function adicionarPontos(jogadorId: string, pontos: number) {
   if (error) throw error;
 }
 
-// ─── Helpers de Rodada ────────────────────────────────────────────────────
-
-export async function criarRodada(
-  salaId: string,
-  numero: number,
-  palavraId: string,
-  duplaVez: 1 | 2
-): Promise<Rodada> {
-  const { data, error } = await supabase
-    .from("rodadas")
-    .insert({
-      sala_id: salaId,
-      numero,
-      palavra_id: palavraId,
-      dupla_vez: duplaVez,
-      status: "ativa",
-      iniciou_em: new Date().toISOString(),
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Rodada;
-}
-
-export async function atualizarStatusRodada(
-  rodadaId: string,
-  status: "ativa" | "acertou" | "errou" | "tempo"
-) {
-  const { error } = await supabase
-    .from("rodadas")
-    .update({ status, encerrou_em: new Date().toISOString() })
-    .eq("id", rodadaId);
-
-  if (error) throw error;
-}
-
-export async function buscarRodadaAtiva(salaId: string) {
-  const { data, error } = await supabase
-    .from("rodadas")
-    .select("*, palavras(*)")
-    .eq("sala_id", salaId)
-    .eq("status", "ativa")
-    .order("numero", { ascending: false })
-    .limit(1)
-    .single();
-
-  if (error && error.code !== "PGRST116") throw error;
-  return data;
-}
 
 // ─── Helpers de Palavras ──────────────────────────────────────────────────
 
