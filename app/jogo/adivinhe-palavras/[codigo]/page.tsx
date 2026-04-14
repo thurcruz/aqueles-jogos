@@ -74,9 +74,11 @@ export default function JogoPrincipal() {
   const [flashAcerto, setFlashAcerto] = useState(false);
   const [timerKey, setTimerKey] = useState(0); // força reset do timer ao mudar palavra
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jogadorLocalRef = useRef<typeof jogadorLocal>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
+  jogadorLocalRef.current = jogadorLocal;
   const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
   // ─── Carregar dados iniciais ─────────────────────────────────────────
@@ -187,8 +189,9 @@ export default function JogoPrincipal() {
           return prev;
         }
         const novaDica = palavraAtual.dicas[prev.dicaBotIdx];
-        // Publica evento de dica_bot para outros jogadores
-        if (sala?.id) {
+        // Só publica se for o jogador da vez (evita eventos duplicados)
+        const jog = jogadorLocalRef.current;
+        if (sala?.id && jog?.dupla === prev.vezDupla) {
           publicarEvento(sala.id, "dica_bot", {
             dica: novaDica,
             numero: prev.dicaBotIdx,
@@ -313,6 +316,10 @@ export default function JogoPrincipal() {
         )
       : "espectador";
 
+  // 1v1: é a minha vez?
+  const minhaVez1v1 = modo === "1v1" && jogadorLocal?.dupla === estado.vezDupla;
+  const jogadorDaVez = jogadores.find((j) => j.dupla === estado.vezDupla && j.ativo) ?? null;
+
   // ─── Ações ───────────────────────────────────────────────────────────
 
   async function handleEnviarDica(e: React.FormEvent) {
@@ -375,7 +382,9 @@ export default function JogoPrincipal() {
       });
 
       setPalpite("");
-      await avancarPalavra();
+      // 1v1: acertou → mesmo jogador continua com a próxima palavra
+      // 2v2: alterna dupla
+      await avancarPalavra(modo === "1v1" ? estado.vezDupla : outraDupla(estado.vezDupla));
     } else {
       // Errou
       setFlashErro(true);
@@ -383,15 +392,8 @@ export default function JogoPrincipal() {
       setPalpite("");
 
       if (modo === "1v1") {
-        // Em 1v1: marca que errou, passa para o outro jogador
-        const novosErros = [...estado.jaErraram, jogadorLocalId];
-        const totalJogadores = jogadores.filter((j) => j.ativo).length;
-        if (novosErros.length >= totalJogadores) {
-          // Todos erraram → avança
-          await avancarPalavra();
-        } else {
-          setEstado((prev) => ({ ...prev, jaErraram: novosErros }));
-        }
+        // Em 1v1: errou → próxima palavra para o outro jogador
+        await avancarPalavra(outraDupla(estado.vezDupla));
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
         if (!estado.passouParaAdversario) {
@@ -404,7 +406,7 @@ export default function JogoPrincipal() {
     }
   }
 
-  async function avancarPalavra() {
+  async function avancarPalavra(proximaDuplaVez?: Dupla) {
     if (!sala) return;
     const proximoIdx = estado.palavraIdx + 1;
 
@@ -416,7 +418,7 @@ export default function JogoPrincipal() {
       return;
     }
 
-    const proximaDuplaVez = outraDupla(estado.vezDupla);
+    const dupla = proximaDuplaVez ?? outraDupla(estado.vezDupla);
     await supabase
       .from("salas")
       .update({ palavra_atual_idx: proximoIdx })
@@ -424,7 +426,7 @@ export default function JogoPrincipal() {
 
     await publicarEvento(sala.id, "proxima_palavra", {
       palavra_idx: proximoIdx,
-      vez_dupla: proximaDuplaVez,
+      vez_dupla: dupla,
     });
   }
 
@@ -455,7 +457,9 @@ export default function JogoPrincipal() {
               Palavra {estado.palavraIdx + 1} / {estado.palavras.length}
             </p>
             <p className="font-corpo font-black text-white text-sm">
-              {modo === "1v1" ? "1v1 · Bot dá as dicas" : `Dupla ${estado.passouParaAdversario ? outraDupla(estado.vezDupla) : estado.vezDupla} tentando`}
+              {modo === "1v1"
+                ? `Vez de ${jogadorDaVez?.apelido ?? "..."}`
+                : `Dupla ${estado.passouParaAdversario ? outraDupla(estado.vezDupla) : estado.vezDupla} tentando`}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -491,7 +495,9 @@ export default function JogoPrincipal() {
               Próxima palavra!
             </p>
             <p className="font-corpo text-roxo/70 font-bold text-sm mt-2">
-              Dupla {outraDupla(estado.vezDupla)} começa
+              {modo === "1v1"
+                ? `Vez de ${jogadorDaVez?.apelido ?? "..."}`
+                : `Dupla ${estado.vezDupla} começa`}
             </p>
           </Card>
         )}
@@ -515,8 +521,34 @@ export default function JogoPrincipal() {
               />
             )}
 
-            {/* Tela do adivinhador (2v2 e 1v1) */}
-            {(modo === "1v1" || (modo === "2v2" && papel === "adivinhador")) && (
+            {/* Tela 1v1: vez do jogador */}
+            {modo === "1v1" && minhaVez1v1 && (
+              <TelaAdivinhador1v1
+                dicas={estado.dicasDadas}
+                palpite={palpite}
+                onChangePalpite={setPalpite}
+                onEnviarPalpite={handlePalpite}
+                flashErro={flashErro}
+                tempoDica={sala?.config?.tempo_dica ?? 60}
+                timerKey={timerKey}
+                onTimerZerou={async () => {
+                  await avancarPalavra(outraDupla(estado.vezDupla));
+                }}
+              />
+            )}
+
+            {/* Tela 1v1: aguardando a vez */}
+            {modo === "1v1" && !minhaVez1v1 && (
+              <TelaEsperando1v1
+                dicas={estado.dicasDadas}
+                apelidoDaVez={jogadorDaVez?.apelido ?? ""}
+                tempoDica={sala?.config?.tempo_dica ?? 60}
+                timerKey={timerKey}
+              />
+            )}
+
+            {/* Tela do adivinhador (2v2) */}
+            {modo === "2v2" && papel === "adivinhador" && (
               <TelaAdivinhador
                 dicas={estado.dicasDadas}
                 palpite={palpite}
@@ -728,20 +760,24 @@ function TelaDicaDor2v2({
 function TimerInline({
   duracaoSegundos,
   onZerou,
+  label = "Tempo para dar dicas",
 }: {
   duracaoSegundos: number;
   onZerou: () => void;
+  label?: string;
 }) {
   const [restante, setRestante] = useState(duracaoSegundos);
+  const onZerouRef = useRef(onZerou);
+  onZerouRef.current = onZerou;
 
   useEffect(() => {
     if (restante <= 0) {
-      onZerou();
+      onZerouRef.current();
       return;
     }
     const id = setTimeout(() => setRestante((s) => s - 1), 1000);
     return () => clearTimeout(id);
-  }, [restante, onZerou]);
+  }, [restante]);
 
   const pct = (restante / duracaoSegundos) * 100;
   const critico = restante <= 10;
@@ -751,7 +787,7 @@ function TimerInline({
     <div className="w-full">
       <div className="flex items-center justify-between mb-1.5">
         <span className="font-corpo text-white/60 text-xs font-bold uppercase">
-          Tempo para dar dicas
+          {label}
         </span>
         <span
           className={`font-pixel text-2xl font-bold ${
@@ -774,6 +810,151 @@ function TimerInline({
           ⚠️ Vai passar para o adversário!
         </p>
       )}
+    </div>
+  );
+}
+
+function TelaAdivinhador1v1({
+  dicas,
+  palpite,
+  onChangePalpite,
+  onEnviarPalpite,
+  flashErro,
+  tempoDica,
+  timerKey,
+  onTimerZerou,
+}: {
+  dicas: string[];
+  palpite: string;
+  onChangePalpite: (v: string) => void;
+  onEnviarPalpite: (e: React.FormEvent) => void;
+  flashErro: boolean;
+  tempoDica: number;
+  timerKey: number;
+  onTimerZerou: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <TimerInline
+        key={timerKey}
+        duracaoSegundos={tempoDica}
+        onZerou={onTimerZerou}
+        label="Tempo para adivinhar"
+      />
+
+      <Card variante="padrao" padding="md">
+        <p className="font-corpo font-black text-gray-500 text-xs uppercase mb-3">
+          Dicas do bot ({dicas.length})
+        </p>
+        {dicas.length === 0 ? (
+          <div className="text-center py-4">
+            <div className="flex justify-center gap-1 mb-2">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="w-2 h-2 bg-roxo/30 rounded-full animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+              ))}
+            </div>
+            <p className="font-corpo text-gray-400 text-sm">Primeira dica chegando...</p>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {dicas.map((d, i) => (
+              <span key={i} className="bg-roxo text-white px-3 py-1.5 rounded-full font-corpo font-black text-base shadow-brutal-sm animate-slide-up">
+                {d}
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <form onSubmit={onEnviarPalpite} className="flex gap-2">
+        <input
+          type="text"
+          value={palpite}
+          onChange={(e) => onChangePalpite(e.target.value.replace(/\s/g, ""))}
+          placeholder="Qual a palavra?"
+          maxLength={40}
+          autoComplete="off"
+          autoFocus
+          className={`flex-1 px-4 py-3 rounded-xl border-2 font-corpo font-black text-roxo-escuro placeholder-gray-400 focus:outline-none text-xl transition-colors ${
+            flashErro
+              ? "border-vermelho bg-vermelho/10 focus:border-vermelho animate-wiggle"
+              : "border-roxo bg-white focus:border-amarelo"
+          }`}
+        />
+        <Button type="submit" variante="amarelo" tamanho="lg" disabled={!palpite.trim()}>
+          ✓
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+function TelaEsperando1v1({
+  dicas,
+  apelidoDaVez,
+  tempoDica,
+  timerKey,
+}: {
+  dicas: string[];
+  apelidoDaVez: string;
+  tempoDica: number;
+  timerKey: number;
+}) {
+  const [restante, setRestante] = useState(tempoDica);
+
+  useEffect(() => {
+    setRestante(tempoDica);
+  }, [timerKey, tempoDica]);
+
+  useEffect(() => {
+    if (restante <= 0) return;
+    const id = setTimeout(() => setRestante((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [restante]);
+
+  const pct = (restante / tempoDica) * 100;
+  const critico = restante <= 10;
+  const urgente = restante <= 20;
+
+  return (
+    <div className="space-y-3">
+      {/* Timer read-only (sincronizado pelo timerKey) */}
+      <div className="w-full opacity-60">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="font-corpo text-white/60 text-xs font-bold uppercase">
+            Tempo de {apelidoDaVez}
+          </span>
+          <span className={`font-pixel text-2xl font-bold ${critico ? "text-vermelho" : urgente ? "text-amarelo" : "text-verde"}`}>
+            {restante}s
+          </span>
+        </div>
+        <div className="w-full h-3 bg-white/20 rounded-full overflow-hidden border border-white/20">
+          <div
+            className={`h-full rounded-full transition-all duration-1000 ease-linear ${critico ? "bg-vermelho" : urgente ? "bg-amarelo" : "bg-verde"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+
+      <Card variante="padrao" padding="md">
+        <p className="font-corpo font-black text-gray-500 text-xs uppercase mb-2">
+          Dicas do bot ({dicas.length})
+        </p>
+        {dicas.length === 0 ? (
+          <p className="font-corpo text-gray-400 text-sm text-center py-2">Aguardando dicas...</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {dicas.map((d, i) => (
+              <span key={i} className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-corpo font-bold text-sm">
+                {d}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="font-corpo text-gray-400 text-xs text-center mt-3">
+          Aguarde — é a vez de <span className="font-black">{apelidoDaVez}</span>
+        </p>
+      </Card>
     </div>
   );
 }
