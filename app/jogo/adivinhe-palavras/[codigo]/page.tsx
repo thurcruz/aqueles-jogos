@@ -134,12 +134,12 @@ export default function JogoPrincipal() {
       vezDupla = p.vez_dupla;
     }
 
-    // Busca as dicas já dadas para a palavra atual
+    // Busca as dicas já dadas para a palavra atual (humanas e do bot)
     const { data: evDicas } = await supabase
       .from("eventos")
       .select("*")
       .eq("sala_id", salaData.id)
-      .eq("tipo", "dica")
+      .in("tipo", ["dica", "dica_bot"])
       .order("criado_em", { ascending: true });
 
     // Filtra dicas da palavra atual
@@ -173,14 +173,14 @@ export default function JogoPrincipal() {
 
   useEffect(() => {
     if (modo !== "1v1" || fase !== "ativa") return;
+    if (estado.palavras.length === 0) return;
     if (botTimerRef.current) clearInterval(botTimerRef.current);
-
-    const palavraAtual = estado.palavras[estado.palavraIdx];
-    if (!palavraAtual) return;
 
     // Revela uma dica do bot a cada 8 segundos
     botTimerRef.current = setInterval(() => {
       setEstado((prev) => {
+        const palavraAtual = prev.palavras[prev.palavraIdx];
+        if (!palavraAtual) return prev;
         if (prev.dicaBotIdx >= (palavraAtual.dicas?.length ?? 0)) {
           clearInterval(botTimerRef.current!);
           return prev;
@@ -205,7 +205,7 @@ export default function JogoPrincipal() {
     return () => {
       if (botTimerRef.current) clearInterval(botTimerRef.current);
     };
-  }, [modo, fase, estado.palavraIdx, sala?.id]);
+  }, [modo, fase, estado.palavraIdx, estado.palavras.length, sala?.id]);
 
   // ─── Realtime ────────────────────────────────────────────────────────
 
