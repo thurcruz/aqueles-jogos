@@ -176,34 +176,32 @@ export default function JogoPrincipal() {
     if (modo !== "1v1" || fase !== "ativa") return;
     if (estado.palavras.length === 0) return;
 
-    // Só o jogador da vez publica
-    const jog = jogadores.find((j) => j.id === jogadorLocalId);
-    if (!jog || jog.dupla !== estado.vezDupla) return;
+    // Só o jogador da vez publica — usa dupla do jogador local (primitivo, sem dep em `jogadores`)
+    if (!jogadorLocal || jogadorLocal.dupla !== estado.vezDupla) return;
 
     const palavraAtual = estado.palavras[estado.palavraIdx];
-    if (!palavraAtual?.dicas?.length) return;
+    const dicas = palavraAtual?.dicas ?? [];
+    // Sem dicas no banco → exibe o que tem mas não quebra
+    if (dicas.length === 0) return;
 
     const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
-    let dicaIdx = estado.dicaBotIdx; // começa de onde parou (reconexão)
+    let dicaIdx = estado.dicaBotIdx;
 
     const revelarProximaDica = () => {
-      if (dicaIdx >= palavraAtual.dicas.length) {
-        // Todas as dicas foram mostradas → passa para o outro
+      if (dicaIdx >= dicas.length) {
         clearInterval(botTimerRef.current!);
         avancarPalavra(outraDupla(estado.vezDupla));
         return;
       }
-      const dica = palavraAtual.dicas[dicaIdx];
+      const dica = dicas[dicaIdx];
       dicaIdx += 1;
 
-      // Atualiza estado local imediatamente (não espera Realtime)
       setEstado((prev) => {
         if (prev.dicasDadas.includes(dica)) return prev;
         return { ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1 };
       });
-      setTimerKey((k) => k + 1); // reseta timer visual
+      setTimerKey((k) => k + 1);
 
-      // Publica para o outro jogador via Realtime
       if (sala?.id) {
         publicarEvento(sala.id, "dica_bot", {
           dica,
@@ -222,7 +220,8 @@ export default function JogoPrincipal() {
     return () => {
       if (botTimerRef.current) clearInterval(botTimerRef.current);
     };
-  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocalId, jogadores, sala?.config?.tempo_dica, sala?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // jogadorLocal.dupla e estado.vezDupla controlam quem é o ativo — sem `jogadores` array para evitar restart a cada update de pontos
+  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocal?.dupla, jogadorLocalId, sala?.config?.tempo_dica, sala?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Realtime ────────────────────────────────────────────────────────
 
