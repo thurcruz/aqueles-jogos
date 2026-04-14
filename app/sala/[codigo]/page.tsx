@@ -12,6 +12,7 @@ import {
   carregarDadosLocais,
   supabase,
   buscarPalavrasAleatorias,
+  sairDaSala,
 } from "@/lib/supabase";
 import {
   salaTemJogadoresSuficientes,
@@ -128,14 +129,26 @@ export default function SalaPage() {
             </p>
             <h1 className="font-pixel text-amarelo text-2xl text-sombra mt-1">{codigo}</h1>
           </div>
-          <div className="text-right">
-            <p className="font-corpo text-white/60 text-xs">
-              {jogadores.length} jogador{jogadores.length !== 1 ? "es" : ""}
-            </p>
-            <div className="flex items-center justify-end gap-1 mt-1">
-              <div className="w-2 h-2 bg-verde rounded-full animate-pulse" />
-              <span className="font-corpo text-verde text-xs font-bold">Aguardando</span>
+          <div className="flex flex-col items-end gap-2">
+            <div className="text-right">
+              <p className="font-corpo text-white/60 text-xs">
+                {jogadores.length} jogador{jogadores.length !== 1 ? "es" : ""}
+              </p>
+              <div className="flex items-center justify-end gap-1 mt-1">
+                <div className="w-2 h-2 bg-verde rounded-full animate-pulse" />
+                <span className="font-corpo text-verde text-xs font-bold">Aguardando</span>
+              </div>
             </div>
+            <button
+              onClick={async () => {
+                if (!confirm("Sair da sala?")) return;
+                if (dadosLocais?.jogador_id) await sairDaSala(dadosLocais.jogador_id).catch(() => {});
+                router.push("/lobby");
+              }}
+              className="px-3 py-1.5 rounded-xl border-2 border-white/30 bg-white/10 text-white/60 font-corpo font-bold text-xs hover:bg-vermelho/30 hover:border-vermelho hover:text-white transition-all"
+            >
+              Sair
+            </button>
           </div>
         </div>
 

@@ -12,6 +12,7 @@ import {
   buscarJogadoresDaSala,
   publicarEvento,
   adicionarPontos,
+  sairDaSala,
 } from "@/lib/supabase";
 import {
   determinarPapel2v2,
@@ -457,9 +458,21 @@ export default function JogoPrincipal() {
               {modo === "1v1" ? "1v1 · Bot dá as dicas" : `Dupla ${estado.passouParaAdversario ? outraDupla(estado.vezDupla) : estado.vezDupla} tentando`}
             </p>
           </div>
-          <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank">
-            <Button variante="fantasma" tamanho="sm">📊</Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank">
+              <Button variante="fantasma" tamanho="sm">📊</Button>
+            </Link>
+            <button
+              onClick={async () => {
+                if (!confirm("Sair da sala?")) return;
+                if (jogadorLocalId) await sairDaSala(jogadorLocalId).catch(() => {});
+                router.push("/lobby");
+              }}
+              className="px-3 py-2 rounded-xl border-2 border-white/30 bg-white/10 text-white/60 font-corpo font-bold text-xs hover:bg-vermelho/30 hover:border-vermelho hover:text-white transition-all"
+            >
+              Sair
+            </button>
+          </div>
         </div>
 
         {/* Mini placar */}

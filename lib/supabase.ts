@@ -121,6 +121,16 @@ export async function trocarDupla(jogadorId: string, dupla: 1 | 2) {
   if (error) throw error;
 }
 
+export async function sairDaSala(jogadorId: string) {
+  const { error } = await supabase
+    .from("jogadores")
+    .update({ ativo: false })
+    .eq("id", jogadorId);
+
+  if (error) throw error;
+  limparDadosLocais();
+}
+
 export async function adicionarPontos(jogadorId: string, pontos: number) {
   const { data: jogador } = await supabase
     .from("jogadores")
