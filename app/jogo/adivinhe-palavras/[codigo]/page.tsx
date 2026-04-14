@@ -183,7 +183,7 @@ export default function JogoPrincipal() {
 
       if (!salaAtual) return;
 
-      if (salaAtual.status === "encerrada" && fase !== "fim") {
+      if (salaAtual.status === "encerrada") {
         setFase("fim");
         return;
       }
