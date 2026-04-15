@@ -9,6 +9,7 @@ export type TipoEvento =
   | "passou"
   | "proxima_palavra"
   | "dica_bot"
+  | "ninguem_acertou"
   | "fim";
 export type Dificuldade = 1 | 2 | 3;
 export type Dupla = 1 | 2;

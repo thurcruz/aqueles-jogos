@@ -77,8 +77,11 @@ export default function JogoPrincipal() {
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const broadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const revelarDicaRef = useRef<(() => void) | null>(null); // para o handlePalpite acionar a próxima dica
+  const resultadoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const jogadorLocalIdRef = useRef("");
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
+  jogadorLocalIdRef.current = jogadorLocalId;
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
   const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
@@ -265,7 +268,10 @@ export default function JogoPrincipal() {
     const revelarProximaDica = () => {
       if (dicaIdx >= dicas.length) {
         clearInterval(botTimerRef.current!);
-        avancarPalavra(outraDupla(estado.vezDupla));
+        // Mostra a palavra por 3s antes de avançar (issue 3)
+        setFase("resultado");
+        publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
+        setTimeout(() => avancarPalavra(outraDupla(estado.vezDupla)), 3000);
         return;
       }
       const dica = dicas[dicaIdx];
@@ -340,15 +346,34 @@ export default function JogoPrincipal() {
     }
 
     if (evento.tipo === "acertou") {
-      const p = evento.payload as { palavra_idx: number; apelido: string };
+      const p = evento.payload as { palavra_idx: number; apelido: string; jogador_id: string };
+      // Ignora broadcast próprio — já tratado localmente em handlePalpite
+      if (p.jogador_id === jogadorLocalIdRef.current) return;
       setEstado((prev) => ({ ...prev, quemAcertou: p.apelido }));
       setFlashAcerto(true);
       setTimeout(() => setFlashAcerto(false), 1200);
       setFase("resultado");
-      setTimeout(() => setFase("preparando"), 2500);
+      if (resultadoTimerRef.current) clearTimeout(resultadoTimerRef.current);
+      resultadoTimerRef.current = setTimeout(() => setFase("preparando"), 2500);
+    }
+
+    if (evento.tipo === "ninguem_acertou") {
+      const p = evento.payload as { palavra_idx: number };
+      setEstado((prev) => {
+        if (p.palavra_idx !== prev.palavraIdx) return prev;
+        return { ...prev, quemAcertou: null };
+      });
+      setFase("resultado");
+      if (resultadoTimerRef.current) clearTimeout(resultadoTimerRef.current);
+      resultadoTimerRef.current = setTimeout(() => setFase("preparando"), 3000);
     }
 
     if (evento.tipo === "proxima_palavra") {
+      // Cancela qualquer timer de resultado pendente
+      if (resultadoTimerRef.current) {
+        clearTimeout(resultadoTimerRef.current);
+        resultadoTimerRef.current = null;
+      }
       const p = evento.payload as {
         palavra_idx: number;
         vez_dupla: Dupla;
@@ -514,26 +539,27 @@ export default function JogoPrincipal() {
       setPalpite("");
 
       if (modo === "1v1") {
-        if (!estado.passouParaAdversario) {
-          // Primeira err: passa a vez para o adversário
-          const novaDupla = outraDupla(estado.vezDupla);
+        const palavraAtualVal = estado.palavras[estado.palavraIdx];
+        const dicasTotais = palavraAtualVal?.dicas ?? [];
+        const novaDupla = outraDupla(estado.vezDupla);
+
+        if (estado.dicaBotIdx < dicasTotais.length) {
+          // Revela próxima dica imediatamente e passa para o adversário (1 tentativa por dica)
+          if (botTimerRef.current) clearInterval(botTimerRef.current);
+          if (revelarDicaRef.current) revelarDicaRef.current();
           await publicar("passou", {
             palavra_idx: estado.palavraIdx,
             dupla: estado.vezDupla,
             vez_dupla_nova: novaDupla,
           });
-          // Mantém fase "ativa" para o bot do novo jogador iniciar corretamente
-          setEstado((prev) => ({ ...prev, passouParaAdversario: true, vezDupla: novaDupla }));
+          setEstado((prev) => ({ ...prev, passouParaAdversario: false, vezDupla: novaDupla }));
           setFase("ativa");
         } else {
-          // Adversário também errou → bot revela próxima dica e reinicia o ciclo
-          const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
+          // Sem mais dicas → ninguém acertou, mostra a palavra
           if (botTimerRef.current) clearInterval(botTimerRef.current);
-          setEstado((prev) => ({ ...prev, passouParaAdversario: false }));
-          if (revelarDicaRef.current) {
-            revelarDicaRef.current();
-            botTimerRef.current = setInterval(revelarDicaRef.current, tempoDicaMs);
-          }
+          await publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
+          setFase("resultado");
+          setTimeout(() => avancarPalavra(novaDupla), 3000);
         }
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
