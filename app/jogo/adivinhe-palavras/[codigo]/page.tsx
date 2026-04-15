@@ -208,10 +208,12 @@ export default function JogoPrincipal() {
       }
 
       // Se o índice da palavra no banco divergiu, recarrega tudo (mudança de palavra)
+      // Exclui "resultado" e "preparando" para não disparar enquanto avancarPalavra ainda está gravando
       if (
         salaAtual.palavra_atual_idx !== null &&
         salaAtual.palavra_atual_idx !== estado.palavraIdx &&
-        fase !== "preparando"
+        fase !== "preparando" &&
+        fase !== "resultado"
       ) {
         carregarJogo();
         return;
@@ -507,8 +509,9 @@ export default function JogoPrincipal() {
     const palavraAtual = estado.palavras[estado.palavraIdx];
     if (!palavraAtual) return;
 
-    const correto =
-      limpo === palavraAtual.palavra.toLowerCase();
+    // Normaliza removendo espaços e hífens para suportar nomes compostos
+    const normalizar = (s: string) => s.toLowerCase().replace(/[\s\-_]+/g, "");
+    const correto = normalizar(limpo) === normalizar(palavraAtual.palavra);
 
     if (correto) {
       // Adiciona ponto para o jogador (e dupla em 2v2)
@@ -614,15 +617,23 @@ export default function JogoPrincipal() {
     setClueStartedAt(Date.now());
     setFase("ativa");
 
-    // Persiste no DB + broadcast para o outro jogador
+    // Grava o evento PRIMEIRO para que carregarJogo() sempre encontre o estado correto
+    await publicarEvento(sala.id, "proxima_palavra", {
+      palavra_idx: proximoIdx,
+      vez_dupla: dupla,
+    });
+
+    // Só então atualiza a sala (o polling detecta essa mudança)
     await supabase
       .from("salas")
       .update({ palavra_atual_idx: proximoIdx })
       .eq("id", sala.id);
 
-    await publicar("proxima_palavra", {
-      palavra_idx: proximoIdx,
-      vez_dupla: dupla,
+    // Broadcast rápido para o outro jogador (sem gravar no DB de novo)
+    broadcastRef.current?.send({
+      type: "broadcast",
+      event: "game_event",
+      payload: { tipo: "proxima_palavra", payload: { palavra_idx: proximoIdx, vez_dupla: dupla } },
     });
   }
 
@@ -1078,7 +1089,7 @@ function TelaAdivinhador1v1({
         <input
           type="text"
           value={palpite}
-          onChange={(e) => onChangePalpite(e.target.value.replace(/\s/g, ""))}
+          onChange={(e) => onChangePalpite(e.target.value)}
           placeholder="Qual a palavra?"
           maxLength={40}
           autoComplete="off"
@@ -1230,7 +1241,7 @@ function TelaAdivinhador({
           <input
             type="text"
             value={palpite}
-            onChange={(e) => onChangePalpite(e.target.value.replace(/\s/g, ""))}
+            onChange={(e) => onChangePalpite(e.target.value)}
             placeholder="Qual a palavra?"
             maxLength={40}
             autoComplete="off"
