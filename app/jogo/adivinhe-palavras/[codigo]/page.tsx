@@ -326,10 +326,14 @@ export default function JogoPrincipal() {
     }
 
     if (evento.tipo === "passou") {
-      const p = evento.payload as { palavra_idx: number };
+      const p = evento.payload as { palavra_idx: number; vez_dupla_nova?: Dupla };
       setEstado((prev) => {
         if (p.palavra_idx !== prev.palavraIdx) return prev;
-        return { ...prev, passouParaAdversario: true };
+        return {
+          ...prev,
+          passouParaAdversario: true,
+          ...(p.vez_dupla_nova ? { vezDupla: p.vez_dupla_nova } : {}),
+        };
       });
       setFase("passou");
     }
@@ -509,13 +513,23 @@ export default function JogoPrincipal() {
       setPalpite("");
 
       if (modo === "1v1") {
-        // Em 1v1: errou → revela próxima dica (mesmo jogador continua tentando)
-        // O bot interval é resetado para contar a partir do erro
-        const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
-        if (botTimerRef.current) clearInterval(botTimerRef.current);
-        if (revelarDicaRef.current) {
-          revelarDicaRef.current(); // revela próxima dica (se acabar as dicas, avança palavra)
-          botTimerRef.current = setInterval(revelarDicaRef.current, tempoDicaMs);
+        if (!estado.passouParaAdversario) {
+          // Primeira err: passa a vez para o adversário
+          const novaDupla = outraDupla(estado.vezDupla);
+          await publicar("passou", {
+            palavra_idx: estado.palavraIdx,
+            dupla: estado.vezDupla,
+            vez_dupla_nova: novaDupla,
+          });
+          setEstado((prev) => ({ ...prev, passouParaAdversario: true, vezDupla: novaDupla }));
+          setFase("passou");
+        } else {
+          // Adversário também errou → bot revela próxima dica e reinicia o ciclo
+          if (botTimerRef.current) clearInterval(botTimerRef.current);
+          setEstado((prev) => ({ ...prev, passouParaAdversario: false }));
+          if (revelarDicaRef.current) {
+            revelarDicaRef.current();
+          }
         }
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
