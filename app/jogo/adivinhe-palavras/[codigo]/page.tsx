@@ -74,6 +74,7 @@ export default function JogoPrincipal() {
   const [flashAcerto, setFlashAcerto] = useState(false);
   const [timerKey, setTimerKey] = useState(0); // força reset do timer visual
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const broadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
@@ -227,6 +228,21 @@ export default function JogoPrincipal() {
     return () => clearInterval(syncInterval);
   }, [sala?.id, fase, estado.palavraIdx, carregarJogo]);
 
+  // Helper: publica no DB + envia broadcast imediato para todos
+  // (declarado aqui pois bot effect depende dele)
+  const publicar = useCallback(
+    async (tipo: string, payload: Record<string, unknown>) => {
+      if (!sala?.id) return;
+      publicarEvento(sala.id, tipo, payload).catch(console.error);
+      broadcastRef.current?.send({
+        type: "broadcast",
+        event: "game_event",
+        payload: { tipo, payload },
+      });
+    },
+    [sala?.id]
+  );
+
   // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
 
   useEffect(() => {
@@ -259,13 +275,11 @@ export default function JogoPrincipal() {
       });
       setTimerKey((k) => k + 1);
 
-      if (sala?.id) {
-        publicarEvento(sala.id, "dica_bot", {
-          dica,
-          numero: dicaIdx - 1,
-          palavra_idx: estado.palavraIdx,
-        }).catch(console.error);
-      }
+      publicar("dica_bot", {
+        dica,
+        numero: dicaIdx - 1,
+        palavra_idx: estado.palavraIdx,
+      });
     };
 
     // Primeira dica aparece imediatamente
@@ -278,7 +292,7 @@ export default function JogoPrincipal() {
       if (botTimerRef.current) clearInterval(botTimerRef.current);
     };
   // jogadorLocal.dupla e estado.vezDupla controlam quem é o ativo — sem `jogadores` array para evitar restart a cada update de pontos
-  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocal?.dupla, jogadorLocalId, sala?.config?.tempo_dica, sala?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocal?.dupla, jogadorLocalId, sala?.config?.tempo_dica, sala?.id, publicar]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Realtime ────────────────────────────────────────────────────────
 
@@ -348,6 +362,22 @@ export default function JogoPrincipal() {
     }
   }, []);
 
+  // ─── Broadcast: canal WebSocket confiável (fallback do postgres_changes) ─
+  useEffect(() => {
+    if (!sala?.id) return;
+    const channel = supabase.channel(`game:${sala.id}`);
+    channel
+      .on("broadcast", { event: "game_event" }, ({ payload }) => {
+        handleEvento(payload as Evento);
+      })
+      .subscribe();
+    broadcastRef.current = channel;
+    return () => {
+      supabase.removeChannel(channel);
+      broadcastRef.current = null;
+    };
+  }, [sala?.id, handleEvento]);
+
   useRealtime({
     salaId: sala?.id ?? "",
     tabela: "eventos",
@@ -401,7 +431,7 @@ export default function JogoPrincipal() {
     if (!valida) { setErroDica(erro ?? ""); return; }
     setErroDica("");
 
-    await publicarEvento(sala.id, "dica", {
+    await publicar("dica", {
       dica: dica.trim().toLowerCase(),
       palavra_idx: estado.palavraIdx,
       jogador_id: jogadorLocalId,
@@ -411,7 +441,7 @@ export default function JogoPrincipal() {
 
   async function handlePassar() {
     if (!sala) return;
-    await publicarEvento(sala.id, "passou", {
+    await publicar("passou", {
       palavra_idx: estado.palavraIdx,
       dupla: estado.vezDupla,
     });
@@ -453,13 +483,13 @@ export default function JogoPrincipal() {
       setFase("resultado");
       setPalpite("");
 
-      // Publica para o outro jogador
-      publicarEvento(sala.id, "acertou", {
+      // Publica para o outro jogador (DB + broadcast)
+      publicar("acertou", {
         palavra_idx: estado.palavraIdx,
         jogador_id: jogadorLocalId,
         apelido: jogadorLocal.apelido,
         dupla: jogadorLocal.dupla,
-      }).catch(console.error);
+      });
 
       // Avança após mostrar o resultado
       const proximaDupla = modo === "1v1" ? estado.vezDupla : outraDupla(estado.vezDupla);
@@ -495,7 +525,7 @@ export default function JogoPrincipal() {
     if (proximoIdx >= estado.palavras.length) {
       // Fim da partida
       await supabase.from("salas").update({ status: "encerrada" }).eq("id", sala.id);
-      await publicarEvento(sala.id, "fim", {});
+      await publicar("fim", {});
       setFase("fim");
       return;
     }
@@ -516,13 +546,13 @@ export default function JogoPrincipal() {
     setTimerKey((k) => k + 1);
     setFase("ativa");
 
-    // Publica para o outro jogador via Realtime
+    // Persiste no DB + broadcast para o outro jogador
     await supabase
       .from("salas")
       .update({ palavra_atual_idx: proximoIdx })
       .eq("id", sala.id);
 
-    await publicarEvento(sala.id, "proxima_palavra", {
+    await publicar("proxima_palavra", {
       palavra_idx: proximoIdx,
       vez_dupla: dupla,
     });
