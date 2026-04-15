@@ -73,7 +73,7 @@ export default function JogoPrincipal() {
   const [erroDica, setErroDica] = useState("");
   const [flashErro, setFlashErro] = useState(false);
   const [flashAcerto, setFlashAcerto] = useState(false);
-  const [timerKey, setTimerKey] = useState(0); // força reset do timer visual
+  const [clueStartedAt, setClueStartedAt] = useState(() => Date.now()); // timestamp de quando a dica atual começou
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const broadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const revelarDicaRef = useRef<(() => void) | null>(null); // para o handlePalpite acionar a próxima dica
@@ -149,13 +149,26 @@ export default function JogoPrincipal() {
       .in("tipo", ["dica", "dica_bot"])
       .order("criado_em", { ascending: true });
 
-    // Filtra dicas da palavra atual
+    // Filtra dicas da palavra atual e extrai o timestamp da última dica do bot
     const dicasAtuais: string[] = [];
+    let ultimaDicaBotTs: number | null = null;
     if (evDicas) {
       for (const ev of evDicas) {
         const p = ev.payload as { palavra_idx: number; dica: string };
-        if (p.palavra_idx === palavraIdx) dicasAtuais.push(p.dica);
+        if (p.palavra_idx === palavraIdx) {
+          dicasAtuais.push(p.dica);
+          if (ev.tipo === "dica_bot") {
+            ultimaDicaBotTs = new Date(ev.criado_em).getTime();
+          }
+        }
       }
+    }
+
+    // Inicializa o timer com o tempo decorrido desde a última dica do bot
+    if (ultimaDicaBotTs) {
+      setClueStartedAt(ultimaDicaBotTs);
+    } else {
+      setClueStartedAt(Date.now());
     }
 
     setEstado({
@@ -281,7 +294,7 @@ export default function JogoPrincipal() {
         if (prev.dicasDadas.includes(dica)) return prev;
         return { ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1 };
       });
-      setTimerKey((k) => k + 1);
+      setClueStartedAt(Date.now());
 
       publicar("dica_bot", {
         dica,
@@ -328,7 +341,7 @@ export default function JogoPrincipal() {
         return { ...prev, dicasDadas: [...prev.dicasDadas, p.dica], dicaBotIdx: prev.dicaBotIdx + 1 };
       });
       // Reseta o timer para countdown da próxima dica
-      setTimerKey((k) => k + 1);
+      setClueStartedAt(Date.now());
     }
 
     if (evento.tipo === "passou") {
@@ -388,7 +401,7 @@ export default function JogoPrincipal() {
         dicaBotIdx: 0,
         quemAcertou: null,
       }));
-      setTimerKey((k) => k + 1); // reseta o timer
+      setClueStartedAt(Date.now()); // reseta o timer
       setFase("ativa");
     }
 
@@ -598,7 +611,7 @@ export default function JogoPrincipal() {
       dicaBotIdx: 0,
       quemAcertou: null,
     }));
-    setTimerKey((k) => k + 1);
+    setClueStartedAt(Date.now());
     setFase("ativa");
 
     // Persiste no DB + broadcast para o outro jogador
@@ -700,7 +713,7 @@ export default function JogoPrincipal() {
                 onPassar={handlePassar}
                 passouParaAdversario={estado.passouParaAdversario}
                 tempoDica={sala?.config?.tempo_dica ?? 60}
-                timerKey={timerKey}
+                startedAt={clueStartedAt}
               />
             )}
 
@@ -713,7 +726,7 @@ export default function JogoPrincipal() {
                 onEnviarPalpite={handlePalpite}
                 flashErro={flashErro}
                 tempoDica={sala?.config?.tempo_dica ?? 60}
-                timerKey={timerKey}
+                startedAt={clueStartedAt}
                 onTimerZerou={() => {/* intervalo controla a revelação */}}
               />
             )}
@@ -724,7 +737,7 @@ export default function JogoPrincipal() {
                 dicas={estado.dicasDadas}
                 apelidoDaVez={jogadorDaVez?.apelido ?? ""}
                 tempoDica={sala?.config?.tempo_dica ?? 60}
-                timerKey={timerKey}
+                startedAt={clueStartedAt}
               />
             )}
 
@@ -863,7 +876,7 @@ function TelaDicaDor2v2({
   onPassar,
   passouParaAdversario,
   tempoDica,
-  timerKey,
+  startedAt,
 }: {
   palavra: Palavra;
   dicasDadas: string[];
@@ -874,7 +887,7 @@ function TelaDicaDor2v2({
   onPassar: () => void;
   passouParaAdversario: boolean;
   tempoDica: number;
-  timerKey: number;
+  startedAt: number;
 }) {
   if (passouParaAdversario) {
     return (
@@ -888,7 +901,7 @@ function TelaDicaDor2v2({
     <div className="space-y-3">
       {/* Timer */}
       <TimerInline
-        key={timerKey}
+        startedAt={startedAt}
         duracaoSegundos={tempoDica}
         onZerou={onPassar}
       />
@@ -939,28 +952,40 @@ function TelaDicaDor2v2({
   );
 }
 
-/** Timer compacto inline — usado dentro das telas do jogo */
+/** Timer compacto inline — sincronizado por startedAt (timestamp absoluto) */
 function TimerInline({
   duracaoSegundos,
+  startedAt,
   onZerou,
   label = "Tempo para dar dicas",
 }: {
   duracaoSegundos: number;
+  startedAt: number;
   onZerou: () => void;
   label?: string;
 }) {
-  const [restante, setRestante] = useState(duracaoSegundos);
+  const calcRestante = () =>
+    Math.max(0, duracaoSegundos - Math.floor((Date.now() - startedAt) / 1000));
+
+  const [restante, setRestante] = useState(calcRestante);
   const onZerouRef = useRef(onZerou);
   onZerouRef.current = onZerou;
+
+  // Re-sincroniza quando startedAt ou duração mudam (reload, nova dica)
+  useEffect(() => {
+    setRestante(calcRestante());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startedAt, duracaoSegundos]);
 
   useEffect(() => {
     if (restante <= 0) {
       onZerouRef.current();
       return;
     }
-    const id = setTimeout(() => setRestante((s) => s - 1), 1000);
+    const id = setTimeout(() => setRestante(calcRestante()), 1000);
     return () => clearTimeout(id);
-  }, [restante]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restante, startedAt]);
 
   const pct = (restante / duracaoSegundos) * 100;
   const critico = restante <= 10;
@@ -1004,7 +1029,7 @@ function TelaAdivinhador1v1({
   onEnviarPalpite,
   flashErro,
   tempoDica,
-  timerKey,
+  startedAt,
   onTimerZerou,
 }: {
   dicas: string[];
@@ -1013,13 +1038,13 @@ function TelaAdivinhador1v1({
   onEnviarPalpite: (e: React.FormEvent) => void;
   flashErro: boolean;
   tempoDica: number;
-  timerKey: number;
+  startedAt: number;
   onTimerZerou: () => void;
 }) {
   return (
     <div className="space-y-3">
       <TimerInline
-        key={timerKey}
+        startedAt={startedAt}
         duracaoSegundos={tempoDica}
         onZerou={onTimerZerou}
         label="Tempo para adivinhar"
@@ -1076,24 +1101,29 @@ function TelaEsperando1v1({
   dicas,
   apelidoDaVez,
   tempoDica,
-  timerKey,
+  startedAt,
 }: {
   dicas: string[];
   apelidoDaVez: string;
   tempoDica: number;
-  timerKey: number;
+  startedAt: number;
 }) {
-  const [restante, setRestante] = useState(tempoDica);
+  const calcRestante = () =>
+    Math.max(0, tempoDica - Math.floor((Date.now() - startedAt) / 1000));
+
+  const [restante, setRestante] = useState(calcRestante);
 
   useEffect(() => {
-    setRestante(tempoDica);
-  }, [timerKey, tempoDica]);
+    setRestante(calcRestante());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startedAt, tempoDica]);
 
   useEffect(() => {
     if (restante <= 0) return;
-    const id = setTimeout(() => setRestante((s) => s - 1), 1000);
+    const id = setTimeout(() => setRestante(calcRestante()), 1000);
     return () => clearTimeout(id);
-  }, [restante]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restante, startedAt]);
 
   const pct = (restante / tempoDica) * 100;
   const critico = restante <= 10;
@@ -1101,7 +1131,7 @@ function TelaEsperando1v1({
 
   return (
     <div className="space-y-3">
-      {/* Timer read-only (sincronizado pelo timerKey) */}
+      {/* Timer sincronizado pelo startedAt absoluto */}
       <div className="w-full opacity-60">
         <div className="flex items-center justify-between mb-1.5">
           <span className="font-corpo text-white/60 text-xs font-bold uppercase">
