@@ -335,7 +335,8 @@ export default function JogoPrincipal() {
           ...(p.vez_dupla_nova ? { vezDupla: p.vez_dupla_nova } : {}),
         };
       });
-      setFase("passou");
+      // Em 1v1 (vez_dupla_nova presente), mantém "ativa" para o bot do novo jogador funcionar
+      setFase(p.vez_dupla_nova ? "ativa" : "passou");
     }
 
     if (evento.tipo === "acertou") {
@@ -521,14 +522,17 @@ export default function JogoPrincipal() {
             dupla: estado.vezDupla,
             vez_dupla_nova: novaDupla,
           });
+          // Mantém fase "ativa" para o bot do novo jogador iniciar corretamente
           setEstado((prev) => ({ ...prev, passouParaAdversario: true, vezDupla: novaDupla }));
-          setFase("passou");
+          setFase("ativa");
         } else {
           // Adversário também errou → bot revela próxima dica e reinicia o ciclo
+          const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
           if (botTimerRef.current) clearInterval(botTimerRef.current);
           setEstado((prev) => ({ ...prev, passouParaAdversario: false }));
           if (revelarDicaRef.current) {
             revelarDicaRef.current();
+            botTimerRef.current = setInterval(revelarDicaRef.current, tempoDicaMs);
           }
         }
       } else {
