@@ -6,6 +6,7 @@ import Link from "next/link";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import PlayerChip from "@/components/ui/PlayerChip";
+import PixelIcon from "@/components/ui/PixelIcon";
 import {
   supabase,
   carregarDadosLocais,
@@ -75,6 +76,7 @@ export default function JogoPrincipal() {
   const [timerKey, setTimerKey] = useState(0); // força reset do timer visual
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const broadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const revelarDicaRef = useRef<(() => void) | null>(null); // para o handlePalpite acionar a próxima dica
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
@@ -281,6 +283,9 @@ export default function JogoPrincipal() {
         palavra_idx: estado.palavraIdx,
       });
     };
+
+    // Expõe para handlePalpite poder acionar próxima dica quando errar
+    revelarDicaRef.current = revelarProximaDica;
 
     // Primeira dica aparece imediatamente
     if (dicaIdx === 0) revelarProximaDica();
@@ -504,8 +509,14 @@ export default function JogoPrincipal() {
       setPalpite("");
 
       if (modo === "1v1") {
-        // Em 1v1: errou → próxima palavra para o outro jogador (atualiza local + publica)
-        await avancarPalavra(outraDupla(estado.vezDupla));
+        // Em 1v1: errou → revela próxima dica (mesmo jogador continua tentando)
+        // O bot interval é resetado para contar a partir do erro
+        const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
+        if (botTimerRef.current) clearInterval(botTimerRef.current);
+        if (revelarDicaRef.current) {
+          revelarDicaRef.current(); // revela próxima dica (se acabar as dicas, avança palavra)
+          botTimerRef.current = setInterval(revelarDicaRef.current, tempoDicaMs);
+        }
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
         if (!estado.passouParaAdversario) {
@@ -592,7 +603,7 @@ export default function JogoPrincipal() {
           </div>
           <div className="flex items-center gap-2">
             <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank">
-              <Button variante="fantasma" tamanho="sm">📊</Button>
+              <Button variante="fantasma" tamanho="sm"><PixelIcon type="chart" size={14} /></Button>
             </Link>
             <button
               onClick={async () => {
@@ -726,9 +737,11 @@ export default function JogoPrincipal() {
           >
             {estado.quemAcertou ? (
               <>
-                <p className="font-pixel text-roxo-escuro text-xl mb-1">✅ ACERTOU!</p>
+                <p className="font-pixel text-roxo-escuro text-xl mb-1">
+                  {estado.quemAcertou === jogadorLocal?.apelido ? "[+] VOCE ACERTOU!" : "[+] ACERTOU!"}
+                </p>
                 <p className="font-corpo font-black text-roxo-escuro text-lg">
-                  {estado.quemAcertou}
+                  {estado.quemAcertou === jogadorLocal?.apelido ? "Joga de novo!" : estado.quemAcertou}
                 </p>
                 <p className="font-corpo text-roxo/70 text-sm font-bold mt-1">
                   era: <span className="text-roxo-escuro">{palavraAtual?.palavra}</span>
@@ -736,7 +749,7 @@ export default function JogoPrincipal() {
               </>
             ) : (
               <>
-                <p className="font-pixel text-white text-lg mb-1">❌ Ninguém acertou</p>
+                <p className="font-pixel text-white text-lg mb-1">[X] NINGUEM ACERTOU</p>
                 <p className="font-corpo text-white/70 font-bold text-sm">
                   era: <span className="text-white">{palavraAtual?.palavra}</span>
                 </p>
@@ -933,7 +946,7 @@ function TimerInline({
       </div>
       {critico && (
         <p className="text-vermelho font-corpo font-black text-xs text-center mt-1 animate-pulse">
-          ⚠️ Vai passar para o adversário!
+          [!] Vai passar para o adversario!
         </p>
       )}
     </div>
@@ -1211,7 +1224,11 @@ function TelaFim({
     <main className="min-h-screen flex flex-col items-center justify-center px-4">
       <div className="max-w-lg w-full space-y-4">
         <div className="text-center">
-          <p className="font-pixel text-white text-2xl animate-pulse-scale">🏆 FIM!</p>
+          <div className="flex items-center justify-center gap-3 mb-1">
+            <PixelIcon type="trophy" size={28} color="#F5C400" />
+            <p className="font-pixel text-white text-2xl animate-pulse-scale">FIM!</p>
+            <PixelIcon type="trophy" size={28} color="#F5C400" />
+          </div>
           <p className="font-corpo text-white/60 font-bold mt-1">
             {vencedor === "empate"
               ? "Empate!"
@@ -1240,25 +1257,29 @@ function TelaFim({
                 <p key={j.id} className="font-corpo font-black text-white text-sm">{j.apelido}</p>
               ))}
               {vencedor === pd.dupla && (
-                <p className="font-pixel text-amarelo text-xs mt-2">VENCEDOR 🏆</p>
+                <div className="flex items-center justify-center gap-1 mt-2">
+                  <PixelIcon type="star" size={12} color="#F5C400" />
+                  <p className="font-pixel text-amarelo text-xs">VENCEDOR</p>
+                  <PixelIcon type="star" size={12} color="#F5C400" />
+                </div>
               )}
             </div>
           ))}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Button variante="amarelo" tamanho="lg" larguraTotal onClick={onReiniciar} icone={<span>🔄</span>}>
+          <Button variante="amarelo" tamanho="lg" larguraTotal onClick={onReiniciar} icone={<PixelIcon type="reload" size={16} color="currentColor" />}>
             Jogar de novo
           </Button>
           <Link href="/" className="block">
-            <Button variante="fantasma" tamanho="lg" larguraTotal icone={<span>🏠</span>}>
-              Início
+            <Button variante="fantasma" tamanho="lg" larguraTotal icone={<PixelIcon type="home" size={16} color="currentColor" />}>
+              Inicio
             </Button>
           </Link>
         </div>
 
         <Link href={`/jogo/adivinhe-palavras/${codigo}/placar`} target="_blank" className="block">
-          <Button variante="secundario" tamanho="md" larguraTotal icone={<span>📊</span>}>
+          <Button variante="secundario" tamanho="md" larguraTotal icone={<PixelIcon type="chart" size={14} color="currentColor" />}>
             Ver Placar na TV
           </Button>
         </Link>
