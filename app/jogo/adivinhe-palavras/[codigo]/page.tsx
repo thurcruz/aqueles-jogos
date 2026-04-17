@@ -79,9 +79,12 @@ export default function JogoPrincipal() {
   const revelarDicaRef = useRef<(() => void) | null>(null); // para o handlePalpite acionar a próxima dica
   const resultadoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const jogadorLocalIdRef = useRef("");
+  const estadoRef = useRef<EstadoLocal | null>(null); // ref sempre atualizado para evitar stale closures
+  const avancarPalavraRef = useRef<((proximaDuplaVez?: Dupla) => Promise<void>) | null>(null);
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   jogadorLocalIdRef.current = jogadorLocalId;
+  estadoRef.current = estado;
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
   const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
@@ -208,11 +211,10 @@ export default function JogoPrincipal() {
       }
 
       // Se o índice da palavra no banco divergiu, recarrega tudo (mudança de palavra)
-      // Exclui "resultado" e "preparando" para não disparar enquanto avancarPalavra ainda está gravando
+      // "preparando" é permitido para resgatar jogador remoto preso se o broadcast falhar
       if (
         salaAtual.palavra_atual_idx !== null &&
         salaAtual.palavra_atual_idx !== estado.palavraIdx &&
-        fase !== "preparando" &&
         fase !== "resultado"
       ) {
         carregarJogo();
@@ -286,7 +288,7 @@ export default function JogoPrincipal() {
         // Mostra a palavra por 3s antes de avançar (issue 3)
         setFase("resultado");
         publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
-        setTimeout(() => avancarPalavra(outraDupla(estado.vezDupla)), 3000);
+        setTimeout(() => avancarPalavraRef.current?.(outraDupla(estado.vezDupla)), 3000);
         return;
       }
       const dica = dicas[dicaIdx];
@@ -546,7 +548,7 @@ export default function JogoPrincipal() {
       const proximaDupla = modo === "1v1" ? estado.vezDupla : outraDupla(estado.vezDupla);
       setTimeout(() => {
         setFase("preparando");
-        avancarPalavra(proximaDupla);
+        avancarPalavraRef.current?.(proximaDupla);
       }, 2500);
     } else {
       // Errou
@@ -575,7 +577,7 @@ export default function JogoPrincipal() {
           if (botTimerRef.current) clearInterval(botTimerRef.current);
           await publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
           setFase("resultado");
-          setTimeout(() => avancarPalavra(novaDupla), 3000);
+          setTimeout(() => avancarPalavraRef.current?.(novaDupla), 3000);
         }
       } else {
         // Em 2v2: se a dupla da vez errou → passa para adversário
@@ -591,19 +593,19 @@ export default function JogoPrincipal() {
 
   async function avancarPalavra(proximaDuplaVez?: Dupla) {
     if (!sala) return;
-    const proximoIdx = estado.palavraIdx + 1;
+    // Usa ref para evitar stale closure quando chamado de dentro de setTimeout
+    const estadoAtual = estadoRef.current!;
+    const proximoIdx = estadoAtual.palavraIdx + 1;
 
-    if (proximoIdx >= estado.palavras.length) {
-      // Fim da partida
+    if (proximoIdx >= estadoAtual.palavras.length) {
       await supabase.from("salas").update({ status: "encerrada" }).eq("id", sala.id);
       await publicar("fim", {});
       setFase("fim");
       return;
     }
 
-    const dupla = proximaDuplaVez ?? outraDupla(estado.vezDupla);
+    const dupla = proximaDuplaVez ?? outraDupla(estadoAtual.vezDupla);
 
-    // Atualiza estado LOCAL imediatamente — não espera o Realtime entregar de volta
     setEstado((prev) => ({
       ...prev,
       palavraIdx: proximoIdx,
@@ -618,24 +620,30 @@ export default function JogoPrincipal() {
     setFase("ativa");
 
     // Grava o evento PRIMEIRO para que carregarJogo() sempre encontre o estado correto
-    await publicarEvento(sala.id, "proxima_palavra", {
-      palavra_idx: proximoIdx,
-      vez_dupla: dupla,
-    });
+    try {
+      await publicarEvento(sala.id, "proxima_palavra", {
+        palavra_idx: proximoIdx,
+        vez_dupla: dupla,
+      });
+    } catch (e) {
+      console.error("Erro ao gravar proxima_palavra:", e);
+    }
 
-    // Só então atualiza a sala (o polling detecta essa mudança)
+    // Atualiza a sala (polling detecta essa mudança)
     await supabase
       .from("salas")
       .update({ palavra_atual_idx: proximoIdx })
       .eq("id", sala.id);
 
-    // Broadcast rápido para o outro jogador (sem gravar no DB de novo)
+    // Broadcast imediato para o outro jogador
     broadcastRef.current?.send({
       type: "broadcast",
       event: "game_event",
       payload: { tipo: "proxima_palavra", payload: { palavra_idx: proximoIdx, vez_dupla: dupla } },
     });
   }
+  // Sempre aponta para a versão mais recente (evita stale closure em setTimeout)
+  avancarPalavraRef.current = avancarPalavra;
 
   // ─── Helpers de renderização ──────────────────────────────────────────
 
