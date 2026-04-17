@@ -81,12 +81,14 @@ export default function JogoPrincipal() {
   const jogadorLocalIdRef = useRef("");
   const estadoRef = useRef<EstadoLocal | null>(null); // ref sempre atualizado para evitar stale closures
   const avancarPalavraRef = useRef<((proximaDuplaVez?: Dupla) => Promise<void>) | null>(null);
-  // Chaves únicas `palavraIdx:dica` para dedup global de dicas (persiste entre palavras)
+  const salaRef = useRef<Sala | null>(null);
+  // Chaves `palavraIdx:dica` de TODAS as palavras — impede broadcasts duplicados ou stale de word anterior
   const dicasVistaRef = useRef(new Set<string>());
 
   const jogadorLocalId = dadosLocais?.jogador_id ?? "";
   jogadorLocalIdRef.current = jogadorLocalId;
   estadoRef.current = estado;
+  salaRef.current = sala;
   const jogadorLocal = jogadores.find((j) => j.id === jogadorLocalId) ?? null;
   const modo: ModoJogo = (sala?.config?.modo as ModoJogo) ?? "2v2";
 
@@ -154,18 +156,21 @@ export default function JogoPrincipal() {
       .in("tipo", ["dica", "dica_bot"])
       .order("criado_em", { ascending: true });
 
-    // Carrega TODAS as dicas de TODAS as palavras — histórico global visível para todos
+    // Reconstrói o Set com TODOS os eventos (evita que broadcasts stale de palavras antigas
+    // sejam adicionados). Apenas as dicas da palavra atual vão para dicasDadas.
     dicasVistaRef.current.clear();
-    const todasDicas: string[] = [];
+    const dicasAtuaisSet = new Set<string>();
+    const dicasAtuais: string[] = [];
     let dicaBotIdxAtual = 0;
     let ultimaDicaBotTs: number | null = null;
     if (evDicas) {
       for (const ev of evDicas) {
         const p = ev.payload as { palavra_idx: number; dica: string };
         const key = `${p.palavra_idx}:${p.dica}`;
-        if (!dicasVistaRef.current.has(key)) {
-          dicasVistaRef.current.add(key);
-          todasDicas.push(p.dica);
+        dicasVistaRef.current.add(key);
+        if (p.palavra_idx === palavraIdx && !dicasAtuaisSet.has(p.dica)) {
+          dicasAtuaisSet.add(p.dica);
+          dicasAtuais.push(p.dica);
         }
         if (ev.tipo === "dica_bot" && p.palavra_idx === palavraIdx) {
           dicaBotIdxAtual++;
@@ -174,19 +179,16 @@ export default function JogoPrincipal() {
       }
     }
 
-    // Inicializa o timer com o tempo decorrido desde a última dica do bot
-    if (ultimaDicaBotTs) {
-      setClueStartedAt(ultimaDicaBotTs);
-    } else {
-      setClueStartedAt(Date.now());
-    }
+    // Timer: usa timestamp da última dica do bot; fallback = início da palavra
+    const wordStartTs = evEstado?.criado_em ? new Date(evEstado.criado_em).getTime() : Date.now();
+    setClueStartedAt(ultimaDicaBotTs ?? wordStartTs);
 
     setEstado({
       palavras: palavrasOrdenadas,
       palavraIdx,
       vezDupla,
       passouParaAdversario: false,
-      dicasDadas: todasDicas,
+      dicasDadas: dicasAtuais,
       jaErraram: [],
       dicaBotIdx: dicaBotIdxAtual,
       quemAcertou: null,
@@ -263,12 +265,12 @@ export default function JogoPrincipal() {
   const publicar = useCallback(
     async (tipo: string, payload: Record<string, unknown>) => {
       if (!sala?.id) return;
-      publicarEvento(sala.id, tipo, payload).catch(console.error);
       broadcastRef.current?.send({
         type: "broadcast",
         event: "game_event",
         payload: { tipo, payload },
       });
+      try { await publicarEvento(sala.id, tipo, payload); } catch (e) { console.error(e); }
     },
     [sala?.id]
   );
@@ -412,13 +414,16 @@ export default function JogoPrincipal() {
         palavraIdx: p.palavra_idx,
         vezDupla: p.vez_dupla,
         passouParaAdversario: false,
-        // dicasDadas é global — não reseta entre palavras
+        dicasDadas: [],
         jaErraram: [],
         dicaBotIdx: 0,
         quemAcertou: null,
       }));
       setClueStartedAt(Date.now());
       setFase("ativa");
+      if (salaRef.current?.id) {
+        buscarJogadoresDaSala(salaRef.current.id).then(setJogadores).catch(console.error);
+      }
     }
 
     if (evento.tipo === "fim") {
@@ -623,7 +628,7 @@ export default function JogoPrincipal() {
       palavraIdx: proximoIdx,
       vezDupla: dupla,
       passouParaAdversario: false,
-      // dicasDadas é global — não reseta entre palavras
+      dicasDadas: [],
       jaErraram: [],
       dicaBotIdx: 0,
       quemAcertou: null,
@@ -706,8 +711,8 @@ export default function JogoPrincipal() {
           </div>
         </div>
 
-        {/* Mini placar — escondido durante resultado para não duplicar */}
-        {fase !== "resultado" && <MiniPlacar jogadores={jogadores} modo={modo} />}
+        {/* Mini placar */}
+        <MiniPlacar jogadores={jogadores} modo={modo} />
 
         {/* Progresso de palavras */}
         <ProgressoPalavras
@@ -817,48 +822,34 @@ export default function JogoPrincipal() {
         )}
 
         {/* Resultado */}
-        {fase === "resultado" && (() => {
-          const { dupla1, dupla2 } = calcularPlacar(jogadores, modo);
-          return (
-            <Card
-              variante={estado.quemAcertou ? "amarelo" : "roxo"}
-              padding="md"
-              className="text-center animate-slide-up"
-            >
-              {estado.quemAcertou ? (
-                <>
-                  <p className="font-pixel text-roxo-escuro text-xl mb-1">
-                    {estado.quemAcertou === jogadorLocal?.apelido ? "[+] VOCE ACERTOU!" : "[+] ACERTOU!"}
-                  </p>
-                  <p className="font-corpo font-black text-roxo-escuro text-lg">
-                    {estado.quemAcertou === jogadorLocal?.apelido ? "Joga de novo!" : estado.quemAcertou}
-                  </p>
-                  <p className="font-corpo text-roxo/70 text-sm font-bold mt-1">
-                    era: <span className="text-roxo-escuro">{palavraAtual?.palavra}</span>
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="font-pixel text-white text-lg mb-1">[X] NINGUEM ACERTOU</p>
-                  <p className="font-corpo text-white/70 font-bold text-sm">
-                    era: <span className="text-white">{palavraAtual?.palavra}</span>
-                  </p>
-                </>
-              )}
-              {/* Placar único no resultado */}
-              <div className={`grid grid-cols-2 gap-2 mt-3 pt-3 ${estado.quemAcertou ? "border-t border-roxo/30" : "border-t border-white/20"}`}>
-                <div className="text-center">
-                  <p className={`font-corpo font-bold text-xs mb-0.5 ${estado.quemAcertou ? "text-roxo/60" : "text-white/60"}`}>{dupla1.label}</p>
-                  <p className={`font-pixel text-2xl ${estado.quemAcertou ? "text-roxo-escuro" : "text-amarelo"}`}>{dupla1.pontos}</p>
-                </div>
-                <div className="text-center">
-                  <p className={`font-corpo font-bold text-xs mb-0.5 ${estado.quemAcertou ? "text-roxo/60" : "text-white/60"}`}>{dupla2.label}</p>
-                  <p className={`font-pixel text-2xl ${estado.quemAcertou ? "text-roxo-escuro" : "text-verde"}`}>{dupla2.pontos}</p>
-                </div>
-              </div>
-            </Card>
-          );
-        })()}
+        {fase === "resultado" && (
+          <Card
+            variante={estado.quemAcertou ? "amarelo" : "roxo"}
+            padding="md"
+            className="text-center animate-slide-up"
+          >
+            {estado.quemAcertou ? (
+              <>
+                <p className="font-pixel text-roxo-escuro text-xl mb-1">
+                  {estado.quemAcertou === jogadorLocal?.apelido ? "[+] VOCE ACERTOU!" : "[+] ACERTOU!"}
+                </p>
+                <p className="font-corpo font-black text-roxo-escuro text-lg">
+                  {estado.quemAcertou === jogadorLocal?.apelido ? "Joga de novo!" : estado.quemAcertou}
+                </p>
+                <p className="font-corpo text-roxo/70 text-sm font-bold mt-1">
+                  era: <span className="text-roxo-escuro">{palavraAtual?.palavra}</span>
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-pixel text-white text-lg mb-1">[X] NINGUEM ACERTOU</p>
+                <p className="font-corpo text-white/70 font-bold text-sm">
+                  era: <span className="text-white">{palavraAtual?.palavra}</span>
+                </p>
+              </>
+            )}
+          </Card>
+        )}
 
         {/* Jogadores */}
         <Card variante="padrao" padding="sm">
