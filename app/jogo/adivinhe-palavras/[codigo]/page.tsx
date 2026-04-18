@@ -275,6 +275,10 @@ export default function JogoPrincipal() {
     [sala?.id]
   );
 
+  const handleTimerZerou1v1 = useCallback(() => {
+    revelarDicaRef.current?.();
+  }, []);
+
   // ─── Bot 1v1: revela dicas automaticamente ───────────────────────────
 
   useEffect(() => {
@@ -289,48 +293,43 @@ export default function JogoPrincipal() {
     // Sem dicas no banco → exibe o que tem mas não quebra
     if (dicas.length === 0) return;
 
-    const tempoDicaMs = (sala?.config?.tempo_dica ?? 60) * 1000;
     let dicaIdx = estado.dicaBotIdx;
 
     const revelarProximaDica = () => {
       if (dicaIdx >= dicas.length) {
-        clearInterval(botTimerRef.current!);
-        // Mostra a palavra por 3s antes de avançar (issue 3)
         setFase("resultado");
         publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
         setTimeout(() => avancarPalavraRef.current?.(outraDupla(estado.vezDupla)), 3000);
         return;
       }
+      const isFirstClue = dicaIdx === 0;
       const dica = dicas[dicaIdx];
       dicaIdx += 1;
 
       const key = `${estado.palavraIdx}:${dica}`;
       if (dicasVistaRef.current.has(key)) return;
       dicasVistaRef.current.add(key);
-      setEstado((prev) => ({ ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1 }));
-      setClueStartedAt(Date.now());
 
-      publicar("dica_bot", {
-        dica,
-        numero: dicaIdx - 1,
-        palavra_idx: estado.palavraIdx,
-      });
+      if (isFirstClue) {
+        setEstado((prev) => ({ ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1 }));
+        setClueStartedAt(Date.now());
+        publicar("dica_bot", { dica, numero: 0, palavra_idx: estado.palavraIdx });
+      } else {
+        // Subsequent clue: reveal and pass turn to the other player
+        const novaDupla = outraDupla(estado.vezDupla);
+        setEstado((prev) => ({ ...prev, dicasDadas: [...prev.dicasDadas, dica], dicaBotIdx: prev.dicaBotIdx + 1, vezDupla: novaDupla, passouParaAdversario: false }));
+        setClueStartedAt(Date.now());
+        publicar("dica_bot", { dica, numero: dicaIdx - 1, palavra_idx: estado.palavraIdx });
+        publicar("passou", { palavra_idx: estado.palavraIdx, dupla: estado.vezDupla, vez_dupla_nova: novaDupla });
+      }
     };
 
-    // Expõe para handlePalpite poder acionar próxima dica quando errar
     revelarDicaRef.current = revelarProximaDica;
 
-    // Primeira dica aparece imediatamente
+    // First clue appears immediately; subsequent reveals are driven by onTimerZerou
     if (dicaIdx === 0) revelarProximaDica();
-
-    // Dicas seguintes no intervalo configurado
-    botTimerRef.current = setInterval(revelarProximaDica, tempoDicaMs);
-
-    return () => {
-      if (botTimerRef.current) clearInterval(botTimerRef.current);
-    };
   // jogadorLocal.dupla e estado.vezDupla controlam quem é o ativo — sem `jogadores` array para evitar restart a cada update de pontos
-  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocal?.dupla, jogadorLocalId, sala?.config?.tempo_dica, sala?.id, publicar]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [modo, fase, estado.palavraIdx, estado.palavras.length, estado.vezDupla, jogadorLocal?.dupla, jogadorLocalId, sala?.id, publicar]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Realtime ────────────────────────────────────────────────────────
 
@@ -579,19 +578,11 @@ export default function JogoPrincipal() {
         const novaDupla = outraDupla(estado.vezDupla);
 
         if (estado.dicaBotIdx < dicasTotais.length) {
-          // Revela próxima dica imediatamente e passa para o adversário (1 tentativa por dica)
-          if (botTimerRef.current) clearInterval(botTimerRef.current);
+          // revelarProximaDica handles the clue reveal, turn change, and broadcasts
           if (revelarDicaRef.current) revelarDicaRef.current();
-          await publicar("passou", {
-            palavra_idx: estado.palavraIdx,
-            dupla: estado.vezDupla,
-            vez_dupla_nova: novaDupla,
-          });
-          setEstado((prev) => ({ ...prev, passouParaAdversario: false, vezDupla: novaDupla }));
           setFase("ativa");
         } else {
           // Sem mais dicas → ninguém acertou, mostra a palavra
-          if (botTimerRef.current) clearInterval(botTimerRef.current);
           await publicar("ninguem_acertou", { palavra_idx: estado.palavraIdx });
           setFase("resultado");
           setTimeout(() => avancarPalavraRef.current?.(novaDupla), 3000);
@@ -763,7 +754,7 @@ export default function JogoPrincipal() {
                 flashErro={flashErro}
                 tempoDica={sala?.config?.tempo_dica ?? 60}
                 startedAt={clueStartedAt}
-                onTimerZerou={() => {/* intervalo controla a revelação */}}
+                onTimerZerou={handleTimerZerou1v1}
               />
             )}
 
